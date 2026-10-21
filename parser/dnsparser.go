@@ -19,7 +19,6 @@ type DNSMessage struct {
 
 type DNSNameCollection struct {
 	nQuestions     int
-	currentOffset  int
 	bytesToParse   []byte
 	stringPointers []int
 }
@@ -75,12 +74,13 @@ func (c *DNSNameCollection) parseFromOffset(offset int) (DNSName, int, error) {
 
 func (c *DNSNameCollection) All() iter.Seq[DNSName] {
 	return func(yield func(DNSName) bool) {
+		offset := 0
 		for i := 0; i < c.nQuestions; i++ {
-			name, nextOffset, err := c.parseFromOffset(c.currentOffset)
+			name, nextOffset, err := c.parseFromOffset(offset)
 			if err != nil {
 				return
 			}
-			c.currentOffset = nextOffset
+			offset = nextOffset
 			if !yield(name) {
 				return
 			}
@@ -96,7 +96,6 @@ var (
 func (m *DNSMessage) Names() DNSNameCollection {
 	return DNSNameCollection{
 		nQuestions:     int(m.nQuestions),
-		currentOffset:  0,
 		bytesToParse:   m.message,
 		stringPointers: []int{},
 	}
