@@ -30,22 +30,58 @@ type DNSName struct {
 }
 
 func (c *DNSNameCollection) parseName(offset int) (string, int, error) {
+	if offset < 0 {
+		return "", 0, ErrorInvalidInput
+	}
+	if offset >= len(c.bytesToParse) {
+		return "", 0, ErrorTruncatedDNS
+	}
 	nextStringLength := c.bytesToParse[offset]
 	partialNames := make([]string, 0, 3)
+	nameLength := 1 // Include the terminating root label.
 
 	i := offset + 1
 	for nextStringLength > 0 {
 		if nextStringLength&0xC0 == 0xC0 {
+			if i >= len(c.bytesToParse) {
+				return "", 0, ErrorTruncatedDNS
+			}
 			packetOffset := int(nextStringLength&0x3F)<<8 | int(c.bytesToParse[i])
 			target := packetOffset - 12
+			if target < 0 || target >= len(c.bytesToParse) {
+				return "", 0, ErrorInvalidInput
+			}
+
+			for _, pointer := range c.stringPointers {
+				if pointer == target {
+					return "", 0, ErrorInvalidInput
+				}
+			}
+			stackLength := len(c.stringPointers)
+			c.stringPointers = append(c.stringPointers, target)
+
 			name, _, err := c.parseName(target)
+			c.stringPointers = c.stringPointers[:stackLength]
 			if err != nil {
 				return "", 0, err
 			}
 			if name != "" {
+				if nameLength+len(name)+1 > 255 {
+					return "", 0, ErrorInvalidInput
+				}
 				partialNames = append(partialNames, name)
 			}
 			return strings.Join(partialNames, "."), i + 1, nil
+		}
+		if nextStringLength&0xC0 != 0 {
+			return "", 0, ErrorInvalidInput
+		}
+		nameLength += int(nextStringLength) + 1
+		if nameLength > 255 {
+			return "", 0, ErrorInvalidInput
+		}
+		if int(nextStringLength) >= len(c.bytesToParse)-i {
+			return "", 0, ErrorTruncatedDNS
 		}
 
 		str := string(c.bytesToParse[i : i+int(nextStringLength)])
@@ -65,6 +101,9 @@ func (c *DNSNameCollection) parseFromOffset(offset int) (DNSName, int, error) {
 	name, nextOffset, err := c.parseName(offset)
 	if err != nil {
 		return DNSName{}, 0, err
+	}
+	if len(c.bytesToParse)-nextOffset < 4 {
+		return DNSName{}, 0, ErrorTruncatedDNS
 	}
 	qType := binary.BigEndian.Uint16(c.bytesToParse[nextOffset : nextOffset+2])
 	qClass := binary.BigEndian.Uint16(c.bytesToParse[nextOffset+2 : nextOffset+4])
