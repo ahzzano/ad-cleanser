@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"bytes"
@@ -18,8 +18,9 @@ func TestTCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cleanser := NewCleanser(&CleanserOpts{Addr: listener.Addr().String()})
 	done := make(chan error, 1)
-	go func() { done <- serveTCP(listener) }()
+	go func() { done <- cleanser.serveTCP(listener) }()
 	t.Cleanup(func() {
 		listener.Close()
 		select {
@@ -41,8 +42,9 @@ func TestUDP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cleanser := NewCleanser(&CleanserOpts{Addr: conn.LocalAddr().String()})
 	done := make(chan error, 1)
-	go func() { done <- serveUDP(conn) }()
+	go func() { done <- cleanser.serveUDP(conn) }()
 	t.Cleanup(func() {
 		conn.Close()
 		select {
@@ -57,6 +59,43 @@ func TestUDP(t *testing.T) {
 	if err := checkUDP(conn.LocalAddr().String()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRunUDPBindFailureClosesTCP(t *testing.T) {
+	var udp net.PacketConn
+	var address string
+	for range 100 {
+		var err error
+		udp, err = net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		address = udp.LocalAddr().String()
+		probe, err := net.Listen("tcp", address)
+		if err != nil {
+			udp.Close()
+			udp = nil
+			continue
+		}
+		probe.Close()
+		break
+	}
+	if udp == nil {
+		t.Fatal("could not find a UDP address with TCP available")
+	}
+	defer udp.Close()
+
+	cleanser := NewCleanser(&CleanserOpts{Addr: address})
+	err := cleanser.Run()
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Net != "udp" || opErr.Op != "listen" {
+		t.Fatalf("expected UDP listen failure, got %v", err)
+	}
+	tcp, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("TCP listener was not released: %v", err)
+	}
+	tcp.Close()
 }
 
 func checkTCP(address string) error {
@@ -116,7 +155,7 @@ func TestServerE2E(t *testing.T) {
 	binary := filepath.Join(dir, "ad-cleanser")
 	buildContext, cancelBuild := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelBuild()
-	if output, err := exec.CommandContext(buildContext, "go", "build", "-race", "-o", binary, ".").CombinedOutput(); err != nil {
+	if output, err := exec.CommandContext(buildContext, "go", "build", "-race", "-o", binary, "..").CombinedOutput(); err != nil {
 		t.Fatalf("build server: %v\n%s", err, output)
 	}
 
@@ -161,12 +200,12 @@ func TestServerE2E(t *testing.T) {
 		}
 	})
 
-	const address = "127.0.0.1:5353"
+	const address = "127.0.0.1:15353"
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		select {
 		case <-done:
-			t.Fatalf("server exited before readiness: %v (port 5353 must be free)", waitErr)
+			t.Fatalf("server exited before readiness: %v (port 15353 must be free)", waitErr)
 		default:
 		}
 		err := checkTCP(address)
