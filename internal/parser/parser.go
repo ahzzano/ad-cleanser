@@ -3,7 +3,6 @@ package parser
 import (
 	"encoding/binary"
 	"errors"
-	"iter"
 	"strings"
 )
 
@@ -17,19 +16,18 @@ type DNSMessage struct {
 	message        []byte
 }
 
-type DNSNameCollection struct {
-	nQuestions     int
+type nameParser struct {
 	bytesToParse   []byte
 	stringPointers []int
 }
 
 type DNSName struct {
-	name   string
-	qType  uint16
-	qClass uint16
+	Name  string
+	Type  uint16
+	Class uint16
 }
 
-func (c *DNSNameCollection) parseName(offset int) (string, int, error) {
+func (c *nameParser) parseName(offset int) (string, int, error) {
 	if offset < 0 {
 		return "", 0, ErrorInvalidInput
 	}
@@ -48,7 +46,7 @@ func (c *DNSNameCollection) parseName(offset int) (string, int, error) {
 			}
 			packetOffset := int(nextStringLength&0x3F)<<8 | int(c.bytesToParse[i])
 			target := packetOffset - 12
-			if target < 0 || target >= len(c.bytesToParse) {
+			if target < 0 || target >= len(c.bytesToParse) || target >= offset { // pointers must point backward
 				return "", 0, ErrorInvalidInput
 			}
 
@@ -97,7 +95,7 @@ func (c *DNSNameCollection) parseName(offset int) (string, int, error) {
 	return name, i, nil
 }
 
-func (c *DNSNameCollection) parseFromOffset(offset int) (DNSName, int, error) {
+func (c *nameParser) parseQuestion(offset int) (DNSName, int, error) {
 	name, nextOffset, err := c.parseName(offset)
 	if err != nil {
 		return DNSName{}, 0, err
@@ -108,23 +106,7 @@ func (c *DNSNameCollection) parseFromOffset(offset int) (DNSName, int, error) {
 	qType := binary.BigEndian.Uint16(c.bytesToParse[nextOffset : nextOffset+2])
 	qClass := binary.BigEndian.Uint16(c.bytesToParse[nextOffset+2 : nextOffset+4])
 
-	return DNSName{name: name, qType: qType, qClass: qClass}, nextOffset + 4, nil
-}
-
-func (c *DNSNameCollection) All() iter.Seq[DNSName] {
-	return func(yield func(DNSName) bool) {
-		offset := 0
-		for i := 0; i < c.nQuestions; i++ {
-			name, nextOffset, err := c.parseFromOffset(offset)
-			if err != nil {
-				return
-			}
-			offset = nextOffset
-			if !yield(name) {
-				return
-			}
-		}
-	}
+	return DNSName{Name: name, Type: qType, Class: qClass}, nextOffset + 4, nil
 }
 
 var (
@@ -132,13 +114,26 @@ var (
 	ErrorTruncatedDNS = errors.New("DNS message is truncated")
 )
 
-func (m *DNSMessage) Names() DNSNameCollection {
-	return DNSNameCollection{
-		nQuestions:     int(m.nQuestions),
-		bytesToParse:   m.message,
-		stringPointers: []int{},
-	}
+func (m DNSMessage) Questions() ([]DNSName, error) {
+	qs, _, err := m.parseQuestions()
+	return qs, err
+}
 
+// parseQuestions returns the questions and the offset in m.message where the question section ends.
+func (m DNSMessage) parseQuestions() ([]DNSName, int, error) {
+	p := nameParser{bytesToParse: m.message}
+	// A question needs at least 5 bytes, so cap the preallocation by message size, not the header count.
+	questions := make([]DNSName, 0, min(int(m.nQuestions), len(m.message)/5))
+	offset := 0
+	for range m.nQuestions {
+		q, next, err := p.parseQuestion(offset)
+		if err != nil {
+			return nil, 0, err
+		}
+		questions = append(questions, q)
+		offset = next
+	}
+	return questions, offset, nil
 }
 
 func ParseDNSMessage(message []byte) (DNSMessage, error) {
@@ -162,4 +157,28 @@ func ParseDNSMessage(message []byte) (DNSMessage, error) {
 		nAdditionalRRs: numberOfAdditionalRRs,
 		message:        message[12:],
 	}, nil
+}
+
+const (
+	flagQR        = 0x8000          // response
+	flagRA        = 0x0080          // recursion available
+	flagOpcodeRD  = 0x7800 | 0x0100 // preserved from the query: opcode and RD
+	rcodeNXDomain = 3
+)
+
+// BlockResponse builds an NXDOMAIN reply that echoes only the header and question section.
+func (m DNSMessage) BlockResponse() ([]byte, error) {
+	_, end, err := m.parseQuestions()
+	if err != nil {
+		return nil, err
+	}
+	flags := m.flags&flagOpcodeRD | flagQR | flagRA | rcodeNXDomain
+	response := make([]byte, 0, 12+end)
+	response = binary.BigEndian.AppendUint16(response, m.id)
+	response = binary.BigEndian.AppendUint16(response, flags)
+	response = binary.BigEndian.AppendUint16(response, m.nQuestions)
+	response = binary.BigEndian.AppendUint16(response, 0)
+	response = binary.BigEndian.AppendUint16(response, 0)
+	response = binary.BigEndian.AppendUint16(response, 0)
+	return append(response, m.message[:end]...), nil
 }

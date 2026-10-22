@@ -63,19 +63,8 @@ func TestUDP(t *testing.T) {
 	if err := checkUDP(address); err != nil {
 		t.Fatal(err)
 	}
-	conn, err := net.DialTimeout("udp", address, 2*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if err := exchangeDNS(conn, nil); err != nil {
-		t.Fatalf("empty datagram: %v", err)
-	}
 	requests := upstream.received()
-	if len(requests) != 2 || !bytes.Equal(requests[0], dnsPacket(dnsQueryWire)) || len(requests[1]) != 0 {
+	if len(requests) != 1 || !bytes.Equal(requests[0], dnsPacket(dnsQueryWire)) {
 		t.Fatalf("forwarded datagrams differ: %x", requests)
 	}
 	if err := unused.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
@@ -199,11 +188,67 @@ func TestUDPTimeoutRecovery(t *testing.T) {
 
 func startUDP(t *testing.T, addresses []string) string {
 	t.Helper()
+	return startUDPWithBlacklist(t, addresses, blocklist.New(nil))
+}
+
+func udpRoundTrip(t *testing.T, address string, query []byte, wait time.Duration) ([]byte, error) {
+	t.Helper()
+	client, err := net.Dial("udp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write(query); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(wait)); err != nil {
+		t.Fatal(err)
+	}
+	var buf [65535]byte
+	n, err := client.Read(buf[:])
+	return buf[:n], err
+}
+
+func TestUDPBlocked(t *testing.T) {
+	upstream := startMockDNS(t, false)
+	address := startUDPWithBlacklist(t, []string{upstream.conn.LocalAddr().String()}, blocklist.New([]string{"example.com"}))
+	query := dnsPacket(dnsQueryWire)
+	got, err := udpRoundTrip(t, address, query, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte(nil), query...)
+	want[2], want[3] = 0x81, 0x83
+	if !bytes.Equal(got, want) {
+		t.Fatalf("response = %x, want %x", got, want)
+	}
+	if r := upstream.received(); len(r) != 0 {
+		t.Fatalf("blocked query was forwarded: %x", r)
+	}
+}
+
+func TestUDPMalformedNotForwarded(t *testing.T) {
+	upstream := startMockDNS(t, false)
+	address := startUDPWithBlacklist(t, []string{upstream.conn.LocalAddr().String()}, blocklist.New([]string{"example.com"}))
+	query := append(make([]byte, 12), 0x40, 0, 0, 1, 0, 1)
+	query[5] = 1
+	if got, err := udpRoundTrip(t, address, query, 300*time.Millisecond); err == nil {
+		t.Fatalf("unexpected reply %x", got)
+	} else if timeout, ok := err.(net.Error); !ok || !timeout.Timeout() {
+		t.Fatal(err)
+	}
+	if r := upstream.received(); len(r) != 0 {
+		t.Fatalf("malformed query was forwarded: %x", r)
+	}
+}
+
+func startUDPWithBlacklist(t *testing.T, addresses []string, bl blocklist.Blacklist) string {
+	t.Helper()
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cleanser := NewCleanser(&CleanserOpts{Addr: conn.LocalAddr().String(), DNSAddresses: addresses}, blocklist.New(nil))
+	cleanser := NewCleanser(&CleanserOpts{Addr: conn.LocalAddr().String(), DNSAddresses: addresses}, bl)
 	done := make(chan error, 1)
 	go func() { done <- cleanser.serveUDP(conn) }()
 	t.Cleanup(func() {

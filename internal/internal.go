@@ -9,6 +9,7 @@ import (
 	"time"
 
 	blacklist "ad-cleanser/internal/blacklist"
+	"ad-cleanser/internal/parser"
 )
 
 type CleanserOpts struct {
@@ -55,7 +56,7 @@ func (c *Cleanser) serveUDP(conn net.PacketConn) error {
 		return fmt.Errorf("resolve DNS address %q: %w", address, err)
 	}
 
-	var buf [65535]byte
+	var buf, reply [65535]byte
 	for {
 		n, peer, err := conn.ReadFrom(buf[:])
 		if err != nil {
@@ -63,40 +64,73 @@ func (c *Cleanser) serveUDP(conn net.PacketConn) error {
 		}
 
 		// shortcut: UDP exchanges are sequential, add bounded concurrency if upstream latency limits throughput
-		if err := func() error {
-			upstreamConn, err := net.DialUDP("udp", nil, upstreamAddr)
-			if err != nil {
-				return err
-			}
-			defer upstreamConn.Close()
-			if err := upstreamConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
-				return err
-			}
-			written, err := upstreamConn.Write(buf[:n])
-			if err != nil {
-				return err
-			}
-			if written != n {
-				return io.ErrShortWrite
-			}
-			log.Printf("UDP forward: %s -> %s (%d bytes)", peer, upstreamAddr, n)
-
-			responseLen, err := upstreamConn.Read(buf[:])
-			if err != nil {
-				return err
-			}
-			written, err = conn.WriteTo(buf[:responseLen], peer)
-			if err != nil {
-				return err
-			}
-			if written != responseLen {
-				return io.ErrShortWrite
-			}
-			return nil
-		}(); err != nil {
+		if err := c.handleUDP(conn, peer, upstreamAddr, buf[:n], reply[:]); err != nil {
 			log.Printf("UDP exchange with %s: %v", upstreamAddr, err)
 		}
 	}
+}
+
+func (c *Cleanser) handleUDP(conn net.PacketConn, peer net.Addr, upstreamAddr *net.UDPAddr, query, reply []byte) error {
+	msg, err := parser.ParseDNSMessage(query)
+	if err != nil {
+		return err
+	}
+	questions, err := msg.Questions()
+	if err != nil {
+		return err
+	}
+	for _, q := range questions {
+		if c.blacklist.IsBlocked(q.Name) {
+			log.Printf("UDP blocked %q from %s", q.Name, peer)
+			resp, err := msg.BlockResponse()
+			if err != nil {
+				return err
+			}
+			return writeFull(conn, peer, resp)
+		}
+	}
+
+	resp, err := exchange(upstreamAddr, query, reply)
+	if err != nil {
+		return err
+	}
+	log.Printf("UDP forward: %s -> %s (%d bytes)", peer, upstreamAddr, len(query))
+	return writeFull(conn, peer, resp)
+}
+
+// exchange sends query upstream and reads the answer into reply, which must not alias query.
+func exchange(upstreamAddr *net.UDPAddr, query, reply []byte) ([]byte, error) {
+	upstreamConn, err := net.DialUDP("udp", nil, upstreamAddr)
+	if err != nil {
+		return nil, err
+	}
+	defer upstreamConn.Close()
+	if err := upstreamConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return nil, err
+	}
+	written, err := upstreamConn.Write(query)
+	if err != nil {
+		return nil, err
+	}
+	if written != len(query) {
+		return nil, io.ErrShortWrite
+	}
+	n, err := upstreamConn.Read(reply)
+	if err != nil {
+		return nil, err
+	}
+	return reply[:n], nil
+}
+
+func writeFull(conn net.PacketConn, peer net.Addr, b []byte) error {
+	written, err := conn.WriteTo(b, peer)
+	if err != nil {
+		return err
+	}
+	if written != len(b) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func (c *Cleanser) serveTCP(listener net.Listener) error {

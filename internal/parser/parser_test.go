@@ -2,6 +2,7 @@ package parser
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"testing"
 )
@@ -45,8 +46,8 @@ func TestQuestionValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := DNSNameCollection{bytesToParse: tc.data}
-			_, _, err := c.parseFromOffset(tc.offset)
+			c := nameParser{bytesToParse: tc.data}
+			_, _, err := c.parseQuestion(tc.offset)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("error = %v, want %v", err, tc.want)
 			}
@@ -57,41 +58,14 @@ func TestQuestionValidation(t *testing.T) {
 func TestQuestionNameBoundaries(t *testing.T) {
 	for _, lengths := range [][]int{nil, {63}, {63, 63, 63, 61}} {
 		name := wireName(lengths...)
-		c := DNSNameCollection{bytesToParse: append(name, 0, 1, 0, 1)}
-		n, next, err := c.parseFromOffset(0)
+		c := nameParser{bytesToParse: append(name, 0, 1, 0, 1)}
+		n, next, err := c.parseQuestion(0)
 		var labels [][]byte
 		for _, length := range lengths {
 			labels = append(labels, bytes.Repeat([]byte{'a'}, length))
 		}
-		if err != nil || n.name != string(bytes.Join(labels, []byte{'.'})) || n.qType != 1 || n.qClass != 1 || next != len(c.bytesToParse) {
+		if err != nil || n.Name != string(bytes.Join(labels, []byte{'.'})) || n.Type != 1 || n.Class != 1 || next != len(c.bytesToParse) {
 			t.Fatalf("lengths %v: got %+v next=%d err=%v", lengths, n, next, err)
-		}
-	}
-}
-
-func TestQuestionIterationRestarts(t *testing.T) {
-	packet := make([]byte, 12)
-	packet[5] = 2
-	packet = append(packet, 1, 'a', 0, 0, 1, 0, 1, 1, 'b', 0xc0, 0x0c, 0, 28, 0, 1)
-	message, err := ParseDNSMessage(packet)
-	if err != nil {
-		t.Fatal(err)
-	}
-	collection := message.Names()
-	seq := collection.All()
-	for n := range seq {
-		if n.name != "a" {
-			t.Fatalf("first name = %q", n.name)
-		}
-		break
-	}
-	for range 2 {
-		var got []DNSName
-		for n := range seq {
-			got = append(got, n)
-		}
-		if len(got) != 2 || got[0] != (DNSName{"a", 1, 1}) || got[1] != (DNSName{"b.a", 28, 1}) {
-			t.Fatalf("questions = %+v", got)
 		}
 	}
 }
@@ -104,33 +78,112 @@ func TestQuestionRepeatedPointerTargets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	collection := message.Names()
-	for range 2 {
-		var got []DNSName
-		for n := range collection.All() {
-			got = append(got, n)
-		}
-		if len(got) != 3 || got[0] != (DNSName{"a", 1, 1}) || got[1] != (DNSName{"a", 1, 1}) || got[2] != (DNSName{"a", 28, 1}) {
-			t.Fatalf("questions = %+v", got)
-		}
+	got, err := message.Questions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0] != (DNSName{"a", 1, 1}) || got[1] != (DNSName{"a", 1, 1}) || got[2] != (DNSName{"a", 28, 1}) {
+		t.Fatalf("questions = %+v", got)
+	}
+}
+
+func TestQuestionsMalformed(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		nQuestions byte
+		body       []byte
+		want       error
+	}{
+		{"reserved label tag", 1, []byte{0x40, 0, 0, 1, 0, 1}, ErrorInvalidInput},
+		{"missing second question", 2, []byte{1, 'a', 0, 0, 1, 0, 1}, ErrorTruncatedDNS},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			packet := make([]byte, 12)
+			packet[5] = test.nQuestions
+			message, err := ParseDNSMessage(append(packet, test.body...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := message.Questions(); !errors.Is(err, test.want) || got != nil {
+				t.Fatalf("Questions() = %v, %v; want nil, %v", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestBlockResponse(t *testing.T) {
+	const question = "076578616d706c6503636f6d0000010001"
+	for _, test := range []struct {
+		name         string
+		flagsByte    byte
+		wantFlagByte byte
+	}{
+		{"RD", 0x01, 0x81},
+		{"opcode and RD", 0x29, 0xA9},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// QD=1, AN=1, NS=1, AR=1, with trailing record bytes after the question.
+			query, err := hex.DecodeString("123401000001000100010001" + question + "c00c000100010000003c0004010203ff")
+			if err != nil {
+				t.Fatal(err)
+			}
+			query[2] = test.flagsByte
+			message, err := ParseDNSMessage(query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := hex.DecodeString("123401000001000000000000" + question)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want[2], want[3] = test.wantFlagByte, 0x83
+			got, err := message.BlockResponse()
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("response = %x, %v; want %x", got, err, want)
+			}
+		})
+	}
+}
+
+func TestBlockResponseMalformed(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body []byte
+		want error
+	}{
+		{"reserved label tag", []byte{0x40, 0, 0, 1, 0, 1}, ErrorInvalidInput},
+		{"truncated question", []byte{1, 'a', 0, 0, 1}, ErrorTruncatedDNS},
+		{"forward pointer", []byte{0xc0, 0x0e, 1, 'a', 0, 0, 1, 0, 1}, ErrorInvalidInput},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			packet := make([]byte, 12)
+			packet[5] = 1
+			message, err := ParseDNSMessage(append(packet, test.body...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := message.BlockResponse(); !errors.Is(err, test.want) || got != nil {
+				t.Fatalf("BlockResponse() = %x, %v; want nil, %v", got, err, test.want)
+			}
+		})
 	}
 }
 
 func TestQuestionPointerCleanup(t *testing.T) {
 	t.Run("cycle error", func(t *testing.T) {
-		c := DNSNameCollection{bytesToParse: []byte{0xc0, 0x0c, 1, 'a', 0, 0, 1, 0, 1}}
-		if _, _, err := c.parseFromOffset(0); !errors.Is(err, ErrorInvalidInput) {
+		c := nameParser{bytesToParse: []byte{0xc0, 0x0c, 1, 'a', 0, 0, 1, 0, 1}}
+		if _, _, err := c.parseQuestion(0); !errors.Is(err, ErrorInvalidInput) {
 			t.Fatalf("error = %v, want %v", err, ErrorInvalidInput)
 		}
-		n, next, err := c.parseFromOffset(2)
+		n, next, err := c.parseQuestion(2)
 		if err != nil || n != (DNSName{"a", 1, 1}) || next != 9 {
 			t.Fatalf("got %+v next=%d err=%v", n, next, err)
 		}
 	})
 	t.Run("empty suffix", func(t *testing.T) {
-		c := DNSNameCollection{bytesToParse: []byte{0, 0xc0, 0x0c, 0, 1, 0, 1}}
+		c := nameParser{bytesToParse: []byte{0, 0xc0, 0x0c, 0, 1, 0, 1}}
 		for range 2 {
-			n, next, err := c.parseFromOffset(1)
+			n, next, err := c.parseQuestion(1)
 			if err != nil || n != (DNSName{"", 1, 1}) || next != 7 {
 				t.Fatalf("got %+v next=%d err=%v", n, next, err)
 			}
