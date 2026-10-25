@@ -12,7 +12,8 @@ Programmatic callers pass options and an explicit `blocklist.Blacklist` value to
 `internal.NewCleanser(opts, blacklist)`. The `blocklist` package is imported from
 `ad-cleanser/internal/blacklist`; use `blocklist.New(nil)` for an empty blacklist.
 The constructor stores this dependency, and the command supplies
-`blocklist.New([]string{"example.ad.com"})`. A UDP query with a blacklisted
+`blocklist.New([]string{"example.ad.com"})`. A UDP query with exactly one question is required; others are dropped without a reply.
+Blacklist matching is case-insensitive and also covers subdomains. A UDP query with a blacklisted
 question name is not forwarded; it gets a locally built NXDOMAIN (header plus
 question section only, no EDNS OPT record).
 
