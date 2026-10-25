@@ -1,10 +1,12 @@
 package internal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	blacklist "ad-cleanser/internal/blacklist"
 	"ad-cleanser/internal/parser"
@@ -25,6 +27,7 @@ type Cleanser struct {
 	workers   int
 	queueSize int
 	blacklist blacklist.Blacklist
+	conns     connTracker
 }
 
 // NewCleanser resolves the upstream and rejects forwarding loops before anything is bound.
@@ -56,7 +59,8 @@ func NewCleanser(opts *CleanserOpts, blacklist blacklist.Blacklist) (*Cleanser, 
 	return &Cleanser{addr: opts.Addr, upstream: upstream, workers: opts.Workers, queueSize: opts.QueueSize, blacklist: blacklist}, nil
 }
 
-func (c *Cleanser) Run() error {
+// Run serves until ctx is cancelled or a server fails, then drains in-flight queries.
+func (c *Cleanser) Run(ctx context.Context) error {
 	tcp, err := net.Listen("tcp", c.addr)
 	if err != nil {
 		return err
@@ -68,10 +72,28 @@ func (c *Cleanser) Run() error {
 	}
 	defer udp.Close()
 	log.Printf("listening on TCP and UDP %s", c.addr)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	done := make(chan error, 2)
-	go func() { done <- c.serveUDP(udp) }()
-	go func() { done <- c.serveTCP(tcp) }()
-	return <-done
+	// A server that dies on its own cancels ctx, which stops the other one too.
+	go func() { err := c.serveUDP(udp); cancel(); done <- err }()
+	go func() { err := c.serveTCP(tcp); cancel(); done <- err }()
+
+	<-ctx.Done()
+	log.Print("shutting down")
+	c.conns.Shutdown()
+	tcp.Close()
+	udp.SetReadDeadline(time.Now()) // socket stays open so queued jobs can still reply
+
+	var errs []error
+	for range 2 {
+		if err := <-done; !errors.Is(err, errShutdown) {
+			errs = append(errs, err)
+		}
+	}
+	log.Print("shutdown complete")
+	return errors.Join(errs...)
 }
 
 // forwardFunc sends a query upstream over the caller's transport and returns the reply.

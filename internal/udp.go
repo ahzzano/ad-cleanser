@@ -1,9 +1,11 @@
 package internal
 
 import (
+	"errors"
 	"io"
 	"log"
 	"net"
+	"os"
 	"time"
 
 	"ad-cleanser/internal/parser"
@@ -19,6 +21,9 @@ func (c *Cleanser) serveUDP(conn net.PacketConn) error {
 	for {
 		n, peer, err := conn.ReadFrom(buf[:])
 		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) { // only Run sets this, to stop us
+				return errShutdown // deferred pool.Close drains jobs before the socket closes
+			}
 			return err
 		}
 

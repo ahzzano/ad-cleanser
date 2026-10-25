@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -58,6 +59,9 @@ func (c *Cleanser) serveTCP(listener net.Listener) error {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return errShutdown
+			}
 			return err
 		}
 		select {
@@ -66,7 +70,7 @@ func (c *Cleanser) serveTCP(listener net.Listener) error {
 			go func() {
 				defer wg.Done()
 				defer func() { <-sem }()
-				c.handleTCP(conn)
+				c.conns.Handle(conn, c.handleTCP)
 			}()
 		default:
 			log.Print("TCP connection limit reached, rejecting")
@@ -106,12 +110,12 @@ func (c *Cleanser) handleTCP(conn net.Conn) {
 	}()
 	fwd := func(q []byte) ([]byte, error) { return exchangeTCP(c.upstream.String(), q) }
 	for {
-		if err := conn.SetReadDeadline(time.Now().Add(tcpIdleTimeout)); err != nil {
+		if !c.conns.ArmIdle(conn) {
 			return
 		}
 		query, err := readFrame(conn)
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrDeadlineExceeded) {
 				log.Printf("TCP read %s: %v", conn.RemoteAddr(), err)
 			}
 			return

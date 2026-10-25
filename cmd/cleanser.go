@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"ad-cleanser/config"
 	"ad-cleanser/internal"
@@ -22,7 +25,10 @@ func Execute() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := c.Run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() { <-ctx.Done(); stop() }() // stop() restores default handling, so a second signal force-kills
+	if err := c.Run(ctx); err != nil {
 		log.Fatal(err)
 	}
 }
