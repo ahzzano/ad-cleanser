@@ -17,8 +17,7 @@ type DNSMessage struct {
 }
 
 type nameParser struct {
-	bytesToParse   []byte
-	stringPointers []int
+	bytesToParse []byte
 }
 
 type DNSName struct {
@@ -50,16 +49,7 @@ func (c *nameParser) parseName(offset int) (string, int, error) {
 				return "", 0, ErrorInvalidInput
 			}
 
-			for _, pointer := range c.stringPointers {
-				if pointer == target {
-					return "", 0, ErrorInvalidInput
-				}
-			}
-			stackLength := len(c.stringPointers)
-			c.stringPointers = append(c.stringPointers, target)
-
 			name, _, err := c.parseName(target)
-			c.stringPointers = c.stringPointers[:stackLength]
 			if err != nil {
 				return "", 0, err
 			}
@@ -112,6 +102,8 @@ func (c *nameParser) parseQuestion(offset int) (DNSName, int, error) {
 var (
 	ErrorInvalidInput = errors.New("Input is an invalid input")
 	ErrorTruncatedDNS = errors.New("DNS message is truncated")
+
+	ErrorUnsupportedQuestionCount = errors.New("DNS message must have exactly one question")
 )
 
 func (m DNSMessage) Questions() ([]DNSName, error) {
@@ -141,6 +133,10 @@ func ParseDNSMessage(message []byte) (DNSMessage, error) {
 		return DNSMessage{}, ErrorTruncatedDNS
 	}
 
+	if n := binary.BigEndian.Uint16(message[4:6]); n != maxQuestions {
+		return DNSMessage{}, ErrorUnsupportedQuestionCount
+	}
+
 	id := binary.BigEndian.Uint16(message[:2])
 	flags := binary.BigEndian.Uint16(message[2:4])
 	noOfQuestions := binary.BigEndian.Uint16(message[4:6])
@@ -159,6 +155,9 @@ func ParseDNSMessage(message []byte) (DNSMessage, error) {
 	}, nil
 }
 
+// maxQuestions bounds per-packet parse work; real resolvers send exactly one.
+const maxQuestions = 1
+
 const (
 	flagQR        = 0x8000          // response
 	flagRA        = 0x0080          // recursion available
@@ -166,13 +165,40 @@ const (
 	rcodeNXDomain = 3
 )
 
+const (
+	FormErr  = 1
+	ServFail = 2
+	NotImp   = 4
+)
+
+func (m DNSMessage) Opcode() uint8    { return uint8(m.flags >> 11 & 0xF) }
+func (m DNSMessage) IsResponse() bool { return m.flags&flagQR != 0 }
+
+// ErrorResponse builds a header-only reply for an unparseable query; nil if query is too short or is itself a response.
+func ErrorResponse(query []byte, rcode uint16) []byte {
+	if len(query) < 12 {
+		return nil
+	}
+	flags := binary.BigEndian.Uint16(query[2:4])
+	if flags&flagQR != 0 {
+		return nil
+	}
+	resp := make([]byte, 12)
+	copy(resp, query[:2])
+	binary.BigEndian.PutUint16(resp[2:4], flags&flagOpcodeRD|flagQR|flagRA|rcode)
+	return resp
+}
+
 // BlockResponse builds an NXDOMAIN reply that echoes only the header and question section.
-func (m DNSMessage) BlockResponse() ([]byte, error) {
+func (m DNSMessage) BlockResponse() ([]byte, error) { return m.Response(rcodeNXDomain) }
+
+// Response builds a reply with the given rcode that echoes only the header and question section.
+func (m DNSMessage) Response(rcode uint16) ([]byte, error) {
 	_, end, err := m.parseQuestions()
 	if err != nil {
 		return nil, err
 	}
-	flags := m.flags&flagOpcodeRD | flagQR | flagRA | rcodeNXDomain
+	flags := m.flags&flagOpcodeRD | flagQR | flagRA | rcode
 	response := make([]byte, 0, 12+end)
 	response = binary.BigEndian.AppendUint16(response, m.id)
 	response = binary.BigEndian.AppendUint16(response, flags)

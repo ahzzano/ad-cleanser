@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"testing"
+	"time"
 )
 
 func wireName(lengths ...int) []byte {
@@ -71,19 +72,44 @@ func TestQuestionNameBoundaries(t *testing.T) {
 }
 
 func TestQuestionRepeatedPointerTargets(t *testing.T) {
-	packet := make([]byte, 12)
-	packet[5] = 3
-	packet = append(packet, 1, 'a', 0, 0, 1, 0, 1, 0xc0, 0x0c, 0, 1, 0, 1, 0xc0, 0x0c, 0, 28, 0, 1)
-	message, err := ParseDNSMessage(packet)
-	if err != nil {
-		t.Fatal(err)
+	c := nameParser{bytesToParse: []byte{1, 'a', 0, 0, 1, 0, 1, 0xc0, 0x0c, 0, 1, 0, 1, 0xc0, 0x0c, 0, 28, 0, 1}}
+	want := []DNSName{{"a", 1, 1}, {"a", 1, 1}, {"a", 28, 1}}
+	offset := 0
+	for i, w := range want {
+		got, next, err := c.parseQuestion(offset)
+		if err != nil || got != w {
+			t.Fatalf("question %d = %+v, %v; want %+v", i, got, err, w)
+		}
+		offset = next
 	}
-	got, err := message.Questions()
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestQuestionCountRejected(t *testing.T) {
+	for _, n := range []byte{0, 2} {
+		packet := make([]byte, 12)
+		packet[5] = n
+		if _, err := ParseDNSMessage(packet); !errors.Is(err, ErrorUnsupportedQuestionCount) {
+			t.Fatalf("nQuestions=%d: err = %v", n, err)
+		}
 	}
-	if len(got) != 3 || got[0] != (DNSName{"a", 1, 1}) || got[1] != (DNSName{"a", 1, 1}) || got[2] != (DNSName{"a", 28, 1}) {
-		t.Fatalf("questions = %+v", got)
+}
+
+func TestLongPointerChainIsFast(t *testing.T) {
+	// Each pointer points at the previous one, ending at a root label.
+	buf := []byte{0}
+	for i := 0; i < 8000; i++ {
+		target := 12 + len(buf) - 1
+		if i > 0 {
+			target = 12 + len(buf) - 2
+		}
+		buf = append(buf, 0xc0|byte(target>>8), byte(target))
+	}
+	buf = append(buf, 0, 1, 0, 1)
+	c := nameParser{bytesToParse: buf}
+	start := time.Now()
+	c.parseQuestion(len(buf) - 6)
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("took %v", d)
 	}
 }
 
@@ -95,7 +121,7 @@ func TestQuestionsMalformed(t *testing.T) {
 		want       error
 	}{
 		{"reserved label tag", 1, []byte{0x40, 0, 0, 1, 0, 1}, ErrorInvalidInput},
-		{"missing second question", 2, []byte{1, 'a', 0, 0, 1, 0, 1}, ErrorTruncatedDNS},
+		{"truncated question", 1, []byte{1, 'a', 0, 0, 1}, ErrorTruncatedDNS},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			packet := make([]byte, 12)
