@@ -53,6 +53,9 @@ func NewCleanser(opts *CleanserOpts, blacklist blacklist.Blacklist) (*Cleanser, 
 	if err != nil {
 		return nil, err
 	}
+	if exposedAddr(listen) {
+		log.Printf("warning: listening on %s may expose an open resolver; bind to a LAN or loopback address", opts.Addr)
+	}
 	if self {
 		return nil, fmt.Errorf("upstream %s is this server (%s): forwarding loop", upstream, opts.Addr)
 	}
@@ -148,4 +151,13 @@ func (c *Cleanser) blockedResponse(msg parser.DNSMessage, peer net.Addr) ([]byte
 		}
 	}
 	return nil, nil
+}
+
+// exposedAddr reports whether listen could be reachable from outside a home network.
+func exposedAddr(listen *net.UDPAddr) bool {
+	ip := listen.IP
+	if len(ip) == 0 || ip.IsUnspecified() {
+		return true
+	}
+	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
 }

@@ -8,6 +8,9 @@ Well-formed UDP queries are forwarded unchanged to `1.1.1.1:53`, and one upstrea
 response is relayed to the originating client. Successful forwards log endpoint
 metadata and byte counts, not payloads. TCP remains an echo service, not DNS over TCP.
 
+Bind to a loopback or LAN address. A public bind (`:53`, `0.0.0.0`) lets anyone use the
+server for reflection attacks; startup logs a warning in that case.
+
 Programmatic callers pass options and an explicit `blocklist.Blacklist` value to
 `internal.NewCleanser(opts, blacklist)`. The `blocklist` package is imported from
 `ad-cleanser/internal/blacklist`; use `blocklist.New(nil)` for an empty blacklist.

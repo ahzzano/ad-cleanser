@@ -55,3 +55,18 @@ func TestServeUDPSurvivesTransientRead(t *testing.T) {
 		t.Fatalf("got %v want errShutdown", err)
 	}
 }
+
+func TestExposedAddr(t *testing.T) {
+	for addr, want := range map[string]bool{
+		":53": true, "0.0.0.0:53": true, "[::]:53": true, "8.8.8.8:53": true,
+		"127.0.0.1:53": false, "192.168.1.5:53": false, "10.0.0.1:53": false, "[fe80::1]:53": false,
+	} {
+		a, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := exposedAddr(a); got != want {
+			t.Errorf("exposedAddr(%s)=%v want %v", addr, got, want)
+		}
+	}
+}
