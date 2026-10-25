@@ -216,3 +216,48 @@ func TestQuestionPointerCleanup(t *testing.T) {
 		}
 	})
 }
+
+func TestUDPSizeAndTruncate(t *testing.T) {
+	q := []byte{0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 'a', 0, 0, 1, 0, 1}
+	withOPT := func(size uint16) []byte {
+		e := append([]byte{}, q...)
+		e[11] = 1
+		return append(e, 0, 0, 41, byte(size>>8), byte(size), 0, 0, 0, 0, 0, 0)
+	}
+	if got := UDPSize(q); got != 512 {
+		t.Fatalf("plain=%d", got)
+	}
+	for size, want := range map[uint16]int{1232: 1232, 100: 512, 512: 512} {
+		if got := UDPSize(withOPT(size)); got != want {
+			t.Fatalf("opt %d: got %d want %d", size, got, want)
+		}
+	}
+	e := withOPT(4096)
+	if got := UDPSize(e[:len(e)-3]); got != 512 {
+		t.Fatalf("malformed=%d", got)
+	}
+	// non-OPT record whose rdlen runs past the buffer
+	bad := append([]byte{}, q...)
+	bad[7] = 1
+	bad = append(bad, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0xFF, 0xFF)
+	if got := UDPSize(bad); got != 512 {
+		t.Fatalf("rdlen overrun=%d", got)
+	}
+	// name label running past the buffer
+	if got := UDPSize(append(append([]byte{}, withOPT(4096)[:len(q)]...), 50, 'x')); got != 512 {
+		t.Fatalf("label overrun=%d", got)
+	}
+
+	resp := append([]byte{}, q...)
+	resp[2], resp[3], resp[5], resp[7], resp[9], resp[11] = 0x85, 0x83, 1, 1, 2, 3
+	resp = append(resp, make([]byte, 600)...)
+	if got := TruncateResponse(resp, 1000); len(got) != len(resp) {
+		t.Fatal("changed small reply")
+	}
+	got := TruncateResponse(resp, 512)
+	if !bytes.Equal(got[:2], resp[:2]) || got[2] != resp[2]|0x02 || got[3] != resp[3] ||
+		!bytes.Equal(got[4:6], resp[4:6]) || !bytes.Equal(got[6:12], make([]byte, 6)) ||
+		!bytes.Equal(got[12:], q[12:]) {
+		t.Fatalf("bad truncation: %v", got)
+	}
+}

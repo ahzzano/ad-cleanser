@@ -237,3 +237,79 @@ func IsReplyTo(query, reply []byte) bool {
 	}
 	return true
 }
+
+const (
+	defaultUDPSize = 512
+	flagTC         = 0x0200
+	typeOPT        = 41
+)
+
+// skipName returns the offset after the (possibly compressed) name at off, or -1 if malformed.
+func skipName(b []byte, off int) int {
+	for off < len(b) {
+		l := int(b[off])
+		switch {
+		case l == 0:
+			return off + 1
+		case l&0xC0 == 0xC0:
+			if off+2 > len(b) {
+				return -1
+			}
+			return off + 2
+		case l&0xC0 != 0:
+			return -1
+		}
+		if off+1+l > len(b) {
+			return -1
+		}
+		off += 1 + l
+	}
+	return -1
+}
+
+// UDPSize returns the largest UDP reply the query's sender accepts: 512, or its EDNS0 payload size if larger.
+func UDPSize(query []byte) int {
+	m, err := ParseDNSMessage(query)
+	if err != nil {
+		return defaultUDPSize
+	}
+	_, off, err := m.parseQuestions()
+	if err != nil {
+		return defaultUDPSize
+	}
+	b := m.message
+	total := int(m.nAnswerRRs) + int(m.nAuthorityRRs) + int(m.nAdditionalRRs)
+	for range total {
+		if off = skipName(b, off); off < 0 || off+10 > len(b) {
+			return defaultUDPSize
+		}
+		typ := binary.BigEndian.Uint16(b[off:])
+		class := int(binary.BigEndian.Uint16(b[off+2:]))
+		rdlen := int(binary.BigEndian.Uint16(b[off+8:]))
+		if typ == typeOPT {
+			return max(class, defaultUDPSize)
+		}
+		if off += 10 + rdlen; off > len(b) {
+			return defaultUDPSize
+		}
+	}
+	return defaultUDPSize
+}
+
+// TruncateResponse returns resp if it fits in limit bytes; otherwise a valid reply
+// with TC set holding only the header and question section.
+func TruncateResponse(resp []byte, limit int) []byte {
+	if len(resp) <= limit || len(resp) < 12 {
+		return resp
+	}
+	out := make([]byte, 12)
+	copy(out, resp[:4])
+	out[2] |= flagTC >> 8
+	if m, err := ParseDNSMessage(resp); err == nil {
+		if _, end, err := m.parseQuestions(); err == nil {
+			binary.BigEndian.PutUint16(out[4:], m.nQuestions)
+			out = append(out, m.message[:end]...)
+		}
+	}
+	return out
+}

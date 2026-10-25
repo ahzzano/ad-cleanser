@@ -65,13 +65,17 @@ func slowUpstream(t *testing.T, delay time.Duration, got chan<- struct{}) *net.U
 
 // startCleanser runs a Cleanser and returns its address, cancel func and Run's result channel.
 func startCleanser(t *testing.T, upstream *net.UDPAddr, workers int) (string, context.CancelFunc, chan error) {
+	return startCleanserBL(t, upstream, workers, blacklist.Blacklist{})
+}
+
+func startCleanserBL(t *testing.T, upstream *net.UDPAddr, workers int, bl blacklist.Blacklist) (string, context.CancelFunc, chan error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	addr := l.Addr().String()
 	l.Close()
-	c, err := NewCleanser(&CleanserOpts{Addr: addr, DNSAddresses: []string{upstream.String()}, Workers: workers, QueueSize: 16}, blacklist.Blacklist{})
+	c, err := NewCleanser(&CleanserOpts{Addr: addr, DNSAddresses: []string{upstream.String()}, Workers: workers, QueueSize: 16}, bl)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -46,6 +46,7 @@ func (c *Cleanser) serveUDP(conn net.PacketConn) error {
 func (c *Cleanser) handleUDP(conn net.PacketConn, peer net.Addr, query []byte) error {
 	resp, err := c.resolve(query, peer, c.forwardUDP)
 	if resp != nil {
+		resp = parser.TruncateResponse(resp, parser.UDPSize(query))
 		if werr := writeFull(conn, peer, resp); err == nil {
 			err = werr
 		}
