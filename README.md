@@ -19,8 +19,9 @@ question section only, no EDNS OPT record).
 
 Configure `internal.CleanserOpts.DNSAddresses` using UDP `host:port` addresses
 (bracket IPv6 hosts). UDP serving requires a nonempty list and uses only its first
-entry, with no failover. Treat options and the blacklist's source slice as
-immutable after construction.
+entry, with no failover. An upstream that points at this server's own listen
+endpoint is rejected at startup to avoid a forwarding loop. Treat options and
+the blacklist's source slice as immutable after construction.
 
 UDP exchanges are sequential with a two-second upstream deadline. A failed
 exchange is logged and dropped without echoing the request; later requests can

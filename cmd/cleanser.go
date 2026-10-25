@@ -18,7 +18,11 @@ func Execute() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := internal.NewCleanser(cfg.Opts(), blocklist.New(cfg.Domains)).Run(); err != nil {
+	c, err := internal.NewCleanser(cfg.Opts(), blocklist.New(cfg.Domains))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := c.Run(); err != nil {
 		log.Fatal(err)
 	}
 }
