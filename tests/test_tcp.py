@@ -18,27 +18,28 @@ TARGETS = ["example.ad.com", "youtube.com"]
 THREADS, DURATION = 10, 10  # DURATION in seconds
 local = threading.local()
 
-
 def hit():
     # one socket per worker thread, reused across requests
     if not hasattr(local, "sock"):
-        local.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        local.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         local.sock.settimeout(3)
+        local.sock.connect(("127.0.0.1", 15353))
     q = dns.message.make_query(random.choice(TARGETS), dns.rdatatype.A)
     start = time.perf_counter()
     try:
-        dns.query.udp(q, "127.0.0.1", port=15353, timeout=3, sock=local.sock)
+        dns.query.tcp(q, "127.0.0.1", port=15353, timeout=3, sock=local.sock)
     except Exception as e:
+        # drop the broken connection so the next request reconnects
+        local.sock.close()
+        del local.sock
         return repr(e), 0
     return None, time.perf_counter() - start
-
 
 def worker(deadline):
     res = []
     while time.perf_counter() < deadline:
         res.append(hit())
     return res
-
 
 t0 = time.perf_counter()
 deadline = t0 + DURATION
