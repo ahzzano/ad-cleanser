@@ -1,0 +1,6 @@
+addr: 127.0.0.1:15353
+dns_addresses: ["127.0.0.1:25565"]
+workers: 16
+queue_size: 256
+domains:
+  - example.ad.com

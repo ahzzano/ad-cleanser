@@ -2,18 +2,23 @@ package cmd
 
 import (
 	"log"
+	"os"
 
+	"ad-cleanser/config"
 	"ad-cleanser/internal"
 	"ad-cleanser/internal/blacklist"
 )
 
 func Execute() {
-	opts := &internal.CleanserOpts{
-		Addr:         "127.0.0.1:15353",
-		DNSAddresses: []string{"127.0.0.1:25565"},
+	path := "config.yaml"
+	if len(os.Args) > 1 {
+		path = os.Args[1]
 	}
-	cleanser := internal.NewCleanser(opts, blocklist.New([]string{"example.ad.com"}))
-	if err := cleanser.Run(); err != nil {
+	cfg, err := config.Load(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := internal.NewCleanser(cfg.Opts(), blocklist.New(cfg.Domains)).Run(); err != nil {
 		log.Fatal(err)
 	}
 }
