@@ -24,6 +24,10 @@ func (c *Cleanser) serveUDP(conn net.PacketConn) error {
 			if errors.Is(err, os.ErrDeadlineExceeded) { // only Run sets this, to stop us
 				return errShutdown // deferred pool.Close drains jobs before the socket closes
 			}
+			if isTransient(err) {
+				retryTransient("UDP read", err)
+				continue
+			}
 			return err
 		}
 

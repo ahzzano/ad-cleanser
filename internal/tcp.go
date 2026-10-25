@@ -62,6 +62,10 @@ func (c *Cleanser) serveTCP(listener net.Listener) error {
 			if errors.Is(err, net.ErrClosed) {
 				return errShutdown
 			}
+			if isTransient(err) {
+				retryTransient("TCP accept", err)
+				continue
+			}
 			return err
 		}
 		select {
