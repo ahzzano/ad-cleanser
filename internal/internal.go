@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"time"
 
 	blacklist "ad-cleanser/internal/blacklist"
@@ -16,16 +17,21 @@ type CleanserOpts struct {
 	Addr string
 	// DNSAddresses is required for UDP serving; only the first address is used.
 	DNSAddresses []string
+	// Workers is the UDP worker count; QueueSize is the pending-queue length.
+	Workers   int
+	QueueSize int
 }
 
 type Cleanser struct {
 	addr         string
 	dnsAddresses []string
+	workers      int
+	queueSize    int
 	blacklist    blacklist.Blacklist
 }
 
 func NewCleanser(opts *CleanserOpts, blacklist blacklist.Blacklist) *Cleanser {
-	return &Cleanser{addr: opts.Addr, dnsAddresses: opts.DNSAddresses, blacklist: blacklist}
+	return &Cleanser{addr: opts.Addr, dnsAddresses: opts.DNSAddresses, workers: opts.Workers, queueSize: opts.QueueSize, blacklist: blacklist}
 }
 
 func (c *Cleanser) Run() error {
@@ -50,56 +56,94 @@ func (c *Cleanser) serveUDP(conn net.PacketConn) error {
 	if len(c.dnsAddresses) == 0 {
 		return errors.New("no DNS addresses configured")
 	}
+	if c.workers <= 0 {
+		return errors.New("workers must be positive")
+	}
+	if c.queueSize < 0 {
+		return errors.New("queue size must not be negative")
+	}
 	address := c.dnsAddresses[0]
 	upstreamAddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return fmt.Errorf("resolve DNS address %q: %w", address, err)
 	}
 
-	var buf, reply [65535]byte
+	pool := NewSocketPool(c.workers, c.queueSize, func(j Job) error {
+		return c.handleUDP(conn, j.addr, upstreamAddr, j.query)
+	})
+	defer pool.Close()
+
+	var buf [65535]byte
 	for {
 		n, peer, err := conn.ReadFrom(buf[:])
 		if err != nil {
 			return err
 		}
 
-		// shortcut: UDP exchanges are sequential, add bounded concurrency if upstream latency limits throughput
-		if err := c.handleUDP(conn, peer, upstreamAddr, buf[:n], reply[:]); err != nil {
-			log.Printf("UDP exchange with %s: %v", upstreamAddr, err)
+		q := make([]byte, n)
+		copy(q, buf[:n])
+
+		if !pool.ProcessRequest(Job{
+			addr:  peer,
+			query: q,
+		}) {
+			log.Print("UDP queue is full, dropping request")
 		}
 	}
 }
 
-func (c *Cleanser) handleUDP(conn net.PacketConn, peer net.Addr, upstreamAddr *net.UDPAddr, query, reply []byte) error {
+func (c *Cleanser) handleUDP(conn net.PacketConn, peer net.Addr, upstreamAddr *net.UDPAddr, query []byte) error {
 	msg, err := parser.ParseDNSMessage(query)
 	if err != nil {
+		if r := parser.ErrorResponse(query, parser.FormErr); r != nil {
+			_ = writeFull(conn, peer, r)
+		}
 		return err
 	}
+	if msg.IsResponse() {
+		return nil
+	}
+	// fail answers the client with an error rcode, then returns cause.
+	fail := func(rcode uint16, cause error) error {
+		if r, rerr := msg.Response(rcode); rerr == nil {
+			_ = writeFull(conn, peer, r)
+		}
+		return cause
+	}
+	if msg.Opcode() != 0 {
+		return fail(parser.NotImp, fmt.Errorf("unsupported opcode %d", msg.Opcode()))
+	}
+	resp, err := c.blockedResponse(msg, peer)
+	if err != nil {
+		return fail(parser.FormErr, err)
+	}
+	if resp == nil {
+		resp, err = exchange(upstreamAddr, query)
+		if err != nil {
+			return fail(parser.ServFail, err)
+		}
+		log.Printf("UDP forward: %s -> %s (%d bytes)", peer, upstreamAddr, len(query))
+	}
+	return writeFull(conn, peer, resp)
+}
+
+// blockedResponse returns the block response if any question is blacklisted, else nil, nil.
+func (c *Cleanser) blockedResponse(msg parser.DNSMessage, peer net.Addr) ([]byte, error) {
 	questions, err := msg.Questions()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, q := range questions {
 		if c.blacklist.IsBlocked(q.Name) {
 			log.Printf("UDP blocked %q from %s", q.Name, peer)
-			resp, err := msg.BlockResponse()
-			if err != nil {
-				return err
-			}
-			return writeFull(conn, peer, resp)
+			return msg.BlockResponse()
 		}
 	}
-
-	resp, err := exchange(upstreamAddr, query, reply)
-	if err != nil {
-		return err
-	}
-	log.Printf("UDP forward: %s -> %s (%d bytes)", peer, upstreamAddr, len(query))
-	return writeFull(conn, peer, resp)
+	return nil, nil
 }
 
-// exchange sends query upstream and reads the answer into reply, which must not alias query.
-func exchange(upstreamAddr *net.UDPAddr, query, reply []byte) ([]byte, error) {
+func exchange(upstreamAddr *net.UDPAddr, query []byte) ([]byte, error) {
+	reply := make([]byte, 65535)
 	upstreamConn, err := net.DialUDP("udp", nil, upstreamAddr)
 	if err != nil {
 		return nil, err
@@ -115,11 +159,45 @@ func exchange(upstreamAddr *net.UDPAddr, query, reply []byte) ([]byte, error) {
 	if written != len(query) {
 		return nil, io.ErrShortWrite
 	}
-	n, err := upstreamConn.Read(reply)
-	if err != nil {
-		return nil, err
+	for {
+		n, err := upstreamConn.Read(reply)
+		if err != nil {
+			return nil, err
+		}
+		if matches(query, reply[:n]) {
+			return reply[:n], nil
+		}
+		log.Printf("dropping mismatched upstream reply (%d bytes)", n)
 	}
-	return reply[:n], nil
+}
+
+// matches reports whether reply is a response to query: same ID, QR set, same question.
+func matches(query, reply []byte) bool {
+	if len(reply) < 12 || reply[0] != query[0] || reply[1] != query[1] || reply[2]&0x80 == 0 {
+		return false
+	}
+	qm, err := parser.ParseDNSMessage(query)
+	if err != nil {
+		return false
+	}
+	rm, err := parser.ParseDNSMessage(reply)
+	if err != nil {
+		return false
+	}
+	qs, err := qm.Questions()
+	if err != nil {
+		return false
+	}
+	rs, err := rm.Questions()
+	if err != nil || len(qs) != len(rs) {
+		return false
+	}
+	for i := range qs {
+		if !strings.EqualFold(qs[i].Name, rs[i].Name) || qs[i].Type != rs[i].Type || qs[i].Class != rs[i].Class {
+			return false
+		}
+	}
+	return true
 }
 
 func writeFull(conn net.PacketConn, peer net.Addr, b []byte) error {
