@@ -208,3 +208,32 @@ func (m DNSMessage) Response(rcode uint16) ([]byte, error) {
 	response = binary.BigEndian.AppendUint16(response, 0)
 	return append(response, m.message[:end]...), nil
 }
+
+// IsReplyTo reports whether reply is a response to query: same ID, QR set, same questions.
+func IsReplyTo(query, reply []byte) bool {
+	if len(reply) < 12 || len(query) < 12 || reply[0] != query[0] || reply[1] != query[1] || reply[2]&0x80 == 0 {
+		return false
+	}
+	qm, err := ParseDNSMessage(query)
+	if err != nil {
+		return false
+	}
+	qs, err := qm.Questions()
+	if err != nil {
+		return false
+	}
+	rm, err := ParseDNSMessage(reply)
+	if err != nil {
+		return false
+	}
+	rs, err := rm.Questions()
+	if err != nil || len(qs) != len(rs) {
+		return false
+	}
+	for i := range rs {
+		if !strings.EqualFold(qs[i].Name, rs[i].Name) || qs[i].Type != rs[i].Type || qs[i].Class != rs[i].Class {
+			return false
+		}
+	}
+	return true
+}
