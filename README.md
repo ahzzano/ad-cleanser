@@ -26,6 +26,13 @@ entry, with no failover. An upstream that points at this server's own listen
 endpoint is rejected at startup to avoid a forwarding loop. Treat options and
 the blacklist's source slice as immutable after construction.
 
+UDP replies are limited to 512 bytes, or the EDNS0 size the client advertises; larger
+replies are returned truncated (TC set, header and question only) so the client retries over TCP.
+Limit is max(512, client OPT size); a truncated reply keeps ID, QR/opcode/RD and rcode, and zeroes the
+answer/authority/additional counts. EDNS is passthrough only: the proxy never generates or echoes an OPT
+record, and queries are forwarded unchanged, so the upstream sees the client's advertised size.
+TCP replies are never truncated.
+
 UDP exchanges are sequential with a two-second upstream deadline. A failed
 exchange is logged and dropped without echoing the request; later requests can
 continue. Malformed queries are logged and dropped without a reply.
