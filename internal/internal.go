@@ -18,6 +18,8 @@ type CleanserOpts struct {
 	DNSAddresses []string
 	// Workers is the UDP worker count.
 	Workers int
+	// LogQueries logs every forwarded and blocked query; errors are always logged.
+	LogQueries bool
 }
 
 type Cleanser struct {
@@ -27,6 +29,7 @@ type Cleanser struct {
 	workers     int
 	blacklist   blacklist.Blacklist
 	conns       connTracker
+	logQueries  bool
 }
 
 // NewCleanser resolves the upstream and rejects forwarding loops before anything is bound.
@@ -56,7 +59,7 @@ func NewCleanser(opts *CleanserOpts, blacklist blacklist.Blacklist) (*Cleanser, 
 	if exposedAddr(listen) {
 		log.Printf("warning: listening on %s may expose an open resolver; bind to a LAN or loopback address", opts.Addr)
 	}
-	return &Cleanser{addr: opts.Addr, upstream: upstream, upstreamTCP: upstream.String(), workers: opts.Workers, blacklist: blacklist}, nil
+	return &Cleanser{addr: opts.Addr, upstream: upstream, upstreamTCP: upstream.String(), workers: opts.Workers, blacklist: blacklist, logQueries: opts.LogQueries}, nil
 }
 
 // errShutdown is returned by the serve loops when they stop because Run asked them to.
@@ -117,7 +120,9 @@ func (c *Cleanser) resolve(query []byte, peer net.Addr, fwd forwardFunc) []byte 
 		return msg.Response(parser.NotImp)
 	}
 	if c.blacklist.IsBlocked(msg.Question.Name) {
-		log.Printf("blocked %q from %s", msg.Question.Name, peer)
+		if c.logQueries {
+			log.Printf("blocked %q from %s", msg.Question.Name, peer)
+		}
 		return msg.BlockResponse()
 	}
 	resp, err := fwd(query)
@@ -125,6 +130,8 @@ func (c *Cleanser) resolve(query []byte, peer net.Addr, fwd forwardFunc) []byte 
 		log.Printf("forward for %s: %v", peer, err)
 		return msg.Response(parser.ServFail)
 	}
-	log.Printf("forward: %s (%d bytes)", peer, len(query))
+	if c.logQueries {
+		log.Printf("forward: %s (%d bytes)", peer, len(query))
+	}
 	return resp
 }

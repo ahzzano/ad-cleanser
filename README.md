@@ -5,8 +5,8 @@ An ad blocking DNS in Go
 
 Run `go run .` to listen on TCP and UDP at `127.0.0.1:15353`.
 Well-formed UDP queries are forwarded unchanged to `1.1.1.1:53`, and one upstream
-response is relayed to the originating client. Successful forwards log endpoint
-metadata and byte counts, not payloads. TCP remains an echo service, not DNS over TCP.
+response is relayed to the originating client. Per-query logs (forwarded and blocked
+queries) are off unless `log_queries: true` is set in the config; errors are always logged. TCP remains an echo service, not DNS over TCP.
 
 Bind to a loopback or LAN address. A public bind (`:53`, `0.0.0.0`) lets anyone use the
 server for reflection attacks; startup logs a warning in that case.
