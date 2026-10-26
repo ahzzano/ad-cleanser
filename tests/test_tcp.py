@@ -14,7 +14,7 @@ import dns.rdatatype
 soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (min(10240, hard), hard))
 
-TARGETS = ["example.ad.com", "youtube.com"]
+TARGETS = ["doubleclick.net", "youtube.com"]
 THREADS, DURATION = 10, 10  # DURATION in seconds
 local = threading.local()
 
