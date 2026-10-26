@@ -26,6 +26,7 @@ func Execute() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	bl.FetchLists(cfg.Blacklists, c.Upstream())
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() { <-ctx.Done(); stop() }() // stop() restores default handling, so a second signal force-kills

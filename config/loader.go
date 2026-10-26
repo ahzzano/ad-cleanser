@@ -18,7 +18,8 @@ type Config struct {
 		Allowed []string `yaml:"allowed"`
 		Blocked []string `yaml:"blocked"`
 	} `yaml:"domains"`
-	LogQueries bool `yaml:"log_queries"`
+	LogQueries bool     `yaml:"log_queries"`
+	Blacklists []string `yaml:"blacklists"`
 }
 
 func Load(path string) (*Config, error) {
