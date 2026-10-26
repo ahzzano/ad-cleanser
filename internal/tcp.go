@@ -112,7 +112,7 @@ func (c *Cleanser) handleTCP(conn net.Conn) {
 			log.Printf("TCP panic: %v", r)
 		}
 	}()
-	fwd := func(q []byte) ([]byte, error) { return exchangeTCP(c.upstream.String(), q) }
+	fwd := func(q []byte) ([]byte, error) { return exchangeTCP(c.upstreamTCP, q) }
 	for {
 		if !c.conns.ArmIdle(conn) {
 			return
@@ -124,10 +124,7 @@ func (c *Cleanser) handleTCP(conn net.Conn) {
 			}
 			return
 		}
-		resp, err := c.resolve(query, conn.RemoteAddr(), fwd)
-		if err != nil {
-			log.Printf("TCP: %v", err)
-		}
+		resp := c.resolve(query, conn.RemoteAddr(), fwd)
 		if resp == nil {
 			continue
 		}

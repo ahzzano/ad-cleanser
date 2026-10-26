@@ -17,6 +17,9 @@ func wireName(lengths ...int) []byte {
 	return append(name, 0)
 }
 
+// withHeader prefixes data with a zeroed 12-byte header so offsets and pointers are packet-relative.
+func withHeader(data []byte) []byte { return append(make([]byte, headerLen), data...) }
+
 func TestQuestionValidation(t *testing.T) {
 	maxName := wireName(63, 63, 63, 61)
 	longName := wireName(63, 63, 63, 63)
@@ -27,28 +30,27 @@ func TestQuestionValidation(t *testing.T) {
 		offset int
 		want   error
 	}{
-		{"empty", nil, 0, ErrorTruncatedDNS},
-		{"negative offset", []byte{0}, -1, ErrorInvalidInput},
-		{"offset at end", []byte{0}, 1, ErrorTruncatedDNS},
-		{"missing label bytes", []byte{3, 'a'}, 0, ErrorTruncatedDNS},
-		{"missing terminator", []byte{1, 'a'}, 0, ErrorTruncatedDNS},
-		{"missing pointer byte", []byte{0xc0}, 0, ErrorTruncatedDNS},
-		{"pointer into header", []byte{0xc0, 0}, 0, ErrorInvalidInput},
-		{"pointer past packet", []byte{0xc0, 0xff}, 0, ErrorInvalidInput},
-		{"self cycle", []byte{0xc0, 0x0c}, 0, ErrorInvalidInput},
-		{"two-pointer cycle", []byte{0xc0, 0x0e, 0xc0, 0x0c}, 0, ErrorInvalidInput},
-		{"prefixed cycle", []byte{1, 'a', 0xc0, 0x0c}, 0, ErrorInvalidInput},
-		{"missing type", []byte{0}, 0, ErrorTruncatedDNS},
-		{"missing class", []byte{0, 0, 1, 0}, 0, ErrorTruncatedDNS},
-		{"reserved 01 tag", append([]byte{0x40}, make([]byte, 69)...), 0, ErrorInvalidInput},
-		{"reserved 10 tag", append([]byte{0x80}, make([]byte, 133)...), 0, ErrorInvalidInput},
-		{"oversized name", append(longName, 0, 1, 0, 1), 0, ErrorInvalidInput},
-		{"oversized compressed name", append(compressedLong, 0, 1, 0, 1), len(maxName), ErrorInvalidInput},
+		{"empty", nil, 0, ErrTruncatedDNS},
+		{"negative offset", []byte{0}, -headerLen - 1, ErrInvalidInput},
+		{"offset at end", []byte{0}, 1, ErrTruncatedDNS},
+		{"missing label bytes", []byte{3, 'a'}, 0, ErrTruncatedDNS},
+		{"missing terminator", []byte{1, 'a'}, 0, ErrTruncatedDNS},
+		{"missing pointer byte", []byte{0xc0}, 0, ErrTruncatedDNS},
+		{"pointer into header", []byte{0xc0, 0}, 0, ErrInvalidInput},
+		{"pointer past packet", []byte{0xc0, 0xff}, 0, ErrInvalidInput},
+		{"self cycle", []byte{0xc0, 0x0c}, 0, ErrInvalidInput},
+		{"two-pointer cycle", []byte{0xc0, 0x0e, 0xc0, 0x0c}, 0, ErrInvalidInput},
+		{"prefixed cycle", []byte{1, 'a', 0xc0, 0x0c}, 0, ErrInvalidInput},
+		{"missing type", []byte{0}, 0, ErrTruncatedDNS},
+		{"missing class", []byte{0, 0, 1, 0}, 0, ErrTruncatedDNS},
+		{"reserved 01 tag", append([]byte{0x40}, make([]byte, 69)...), 0, ErrInvalidInput},
+		{"reserved 10 tag", append([]byte{0x80}, make([]byte, 133)...), 0, ErrInvalidInput},
+		{"oversized name", append(longName, 0, 1, 0, 1), 0, ErrInvalidInput},
+		{"oversized compressed name", append(compressedLong, 0, 1, 0, 1), len(maxName), ErrInvalidInput},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := nameParser{bytesToParse: tc.data}
-			_, _, err := c.parseQuestion(tc.offset)
+			_, _, err := parseQuestion(withHeader(tc.data), tc.offset+headerLen)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("error = %v, want %v", err, tc.want)
 			}
@@ -59,24 +61,24 @@ func TestQuestionValidation(t *testing.T) {
 func TestQuestionNameBoundaries(t *testing.T) {
 	for _, lengths := range [][]int{nil, {63}, {63, 63, 63, 61}} {
 		name := wireName(lengths...)
-		c := nameParser{bytesToParse: append(name, 0, 1, 0, 1)}
-		n, next, err := c.parseQuestion(0)
+		b := withHeader(append(name, 0, 1, 0, 1))
+		n, next, err := parseQuestion(b, headerLen)
 		var labels [][]byte
 		for _, length := range lengths {
 			labels = append(labels, bytes.Repeat([]byte{'a'}, length))
 		}
-		if err != nil || n.Name != string(bytes.Join(labels, []byte{'.'})) || n.Type != 1 || n.Class != 1 || next != len(c.bytesToParse) {
+		if err != nil || n.Name != string(bytes.Join(labels, []byte{'.'})) || n.Type != 1 || n.Class != 1 || next != len(b) {
 			t.Fatalf("lengths %v: got %+v next=%d err=%v", lengths, n, next, err)
 		}
 	}
 }
 
 func TestQuestionRepeatedPointerTargets(t *testing.T) {
-	c := nameParser{bytesToParse: []byte{1, 'a', 0, 0, 1, 0, 1, 0xc0, 0x0c, 0, 1, 0, 1, 0xc0, 0x0c, 0, 28, 0, 1}}
-	want := []DNSName{{"a", 1, 1}, {"a", 1, 1}, {"a", 28, 1}}
-	offset := 0
+	b := withHeader([]byte{1, 'a', 0, 0, 1, 0, 1, 0xc0, 0x0c, 0, 1, 0, 1, 0xc0, 0x0c, 0, 28, 0, 1})
+	want := []Question{{"a", 1, 1}, {"a", 1, 1}, {"a", 28, 1}}
+	offset := headerLen
 	for i, w := range want {
-		got, next, err := c.parseQuestion(offset)
+		got, next, err := parseQuestion(b, offset)
 		if err != nil || got != w {
 			t.Fatalf("question %d = %+v, %v; want %+v", i, got, err, w)
 		}
@@ -88,7 +90,7 @@ func TestQuestionCountRejected(t *testing.T) {
 	for _, n := range []byte{0, 2} {
 		packet := make([]byte, 12)
 		packet[5] = n
-		if _, err := ParseDNSMessage(packet); !errors.Is(err, ErrorUnsupportedQuestionCount) {
+		if _, err := ParseDNSMessage(packet); !errors.Is(err, ErrUnsupportedQuestionCount) {
 			t.Fatalf("nQuestions=%d: err = %v", n, err)
 		}
 	}
@@ -96,44 +98,19 @@ func TestQuestionCountRejected(t *testing.T) {
 
 func TestLongPointerChainIsFast(t *testing.T) {
 	// Each pointer points at the previous one, ending at a root label.
-	buf := []byte{0}
+	buf := withHeader([]byte{0})
 	for i := 0; i < 8000; i++ {
-		target := 12 + len(buf) - 1
+		target := len(buf) - 1
 		if i > 0 {
-			target = 12 + len(buf) - 2
+			target = len(buf) - 2
 		}
 		buf = append(buf, 0xc0|byte(target>>8), byte(target))
 	}
 	buf = append(buf, 0, 1, 0, 1)
-	c := nameParser{bytesToParse: buf}
 	start := time.Now()
-	c.parseQuestion(len(buf) - 6)
+	parseQuestion(buf, len(buf)-6)
 	if d := time.Since(start); d > time.Second {
 		t.Fatalf("took %v", d)
-	}
-}
-
-func TestQuestionsMalformed(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		nQuestions byte
-		body       []byte
-		want       error
-	}{
-		{"reserved label tag", 1, []byte{0x40, 0, 0, 1, 0, 1}, ErrorInvalidInput},
-		{"truncated question", 1, []byte{1, 'a', 0, 0, 1}, ErrorTruncatedDNS},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			packet := make([]byte, 12)
-			packet[5] = test.nQuestions
-			message, err := ParseDNSMessage(append(packet, test.body...))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got, err := message.Questions(); !errors.Is(err, test.want) || got != nil {
-				t.Fatalf("Questions() = %v, %v; want nil, %v", got, err, test.want)
-			}
-		})
 	}
 }
 
@@ -158,59 +135,68 @@ func TestBlockResponse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if message.Question != (Question{"example.com", 1, 1}) {
+				t.Fatalf("question = %+v", message.Question)
+			}
 			want, err := hex.DecodeString("123401000001000000000000" + question)
 			if err != nil {
 				t.Fatal(err)
 			}
 			want[2], want[3] = test.wantFlagByte, 0x83
-			got, err := message.BlockResponse()
-			if err != nil || !bytes.Equal(got, want) {
-				t.Fatalf("response = %x, %v; want %x", got, err, want)
+			if got := message.BlockResponse(); !bytes.Equal(got, want) {
+				t.Fatalf("response = %x; want %x", got, want)
 			}
 		})
 	}
 }
 
-func TestBlockResponseMalformed(t *testing.T) {
+func TestParseMalformedQuestion(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		body []byte
 		want error
 	}{
-		{"reserved label tag", []byte{0x40, 0, 0, 1, 0, 1}, ErrorInvalidInput},
-		{"truncated question", []byte{1, 'a', 0, 0, 1}, ErrorTruncatedDNS},
-		{"forward pointer", []byte{0xc0, 0x0e, 1, 'a', 0, 0, 1, 0, 1}, ErrorInvalidInput},
+		{"reserved label tag", []byte{0x40, 0, 0, 1, 0, 1}, ErrInvalidInput},
+		{"truncated question", []byte{1, 'a', 0, 0, 1}, ErrTruncatedDNS},
+		{"forward pointer", []byte{0xc0, 0x0e, 1, 'a', 0, 0, 1, 0, 1}, ErrInvalidInput},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			packet := make([]byte, 12)
+			packet := make([]byte, headerLen)
 			packet[5] = 1
-			message, err := ParseDNSMessage(append(packet, test.body...))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got, err := message.BlockResponse(); !errors.Is(err, test.want) || got != nil {
-				t.Fatalf("BlockResponse() = %x, %v; want nil, %v", got, err, test.want)
+			if _, err := ParseDNSMessage(append(packet, test.body...)); !errors.Is(err, test.want) {
+				t.Fatalf("err = %v, want %v", err, test.want)
 			}
 		})
 	}
 }
 
+func TestIsTruncated(t *testing.T) {
+	h := make([]byte, headerLen)
+	if IsTruncated(h) || IsTruncated(h[:2]) {
+		t.Fatal("unexpected TC")
+	}
+	h[2] = 0x02
+	if !IsTruncated(h) || IsTruncated(h[:3]) {
+		t.Fatal("TC not detected")
+	}
+}
+
 func TestQuestionPointerCleanup(t *testing.T) {
 	t.Run("cycle error", func(t *testing.T) {
-		c := nameParser{bytesToParse: []byte{0xc0, 0x0c, 1, 'a', 0, 0, 1, 0, 1}}
-		if _, _, err := c.parseQuestion(0); !errors.Is(err, ErrorInvalidInput) {
-			t.Fatalf("error = %v, want %v", err, ErrorInvalidInput)
+		b := withHeader([]byte{0xc0, 0x0c, 1, 'a', 0, 0, 1, 0, 1})
+		if _, _, err := parseQuestion(b, headerLen); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("error = %v, want %v", err, ErrInvalidInput)
 		}
-		n, next, err := c.parseQuestion(2)
-		if err != nil || n != (DNSName{"a", 1, 1}) || next != 9 {
+		n, next, err := parseQuestion(b, headerLen+2)
+		if err != nil || n != (Question{"a", 1, 1}) || next != headerLen+9 {
 			t.Fatalf("got %+v next=%d err=%v", n, next, err)
 		}
 	})
 	t.Run("empty suffix", func(t *testing.T) {
-		c := nameParser{bytesToParse: []byte{0, 0xc0, 0x0c, 0, 1, 0, 1}}
+		b := withHeader([]byte{0, 0xc0, 0x0c, 0, 1, 0, 1})
 		for range 2 {
-			n, next, err := c.parseQuestion(1)
-			if err != nil || n != (DNSName{"", 1, 1}) || next != 7 {
+			n, next, err := parseQuestion(b, headerLen+1)
+			if err != nil || n != (Question{"", 1, 1}) || next != headerLen+7 {
 				t.Fatalf("got %+v next=%d err=%v", n, next, err)
 			}
 		}

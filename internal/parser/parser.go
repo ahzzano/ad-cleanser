@@ -6,157 +6,118 @@ import (
 	"strings"
 )
 
-type DNSMessage struct {
-	id             uint16
-	flags          uint16
-	nQuestions     uint16
-	nAnswerRRs     uint16
-	nAuthorityRRs  uint16
-	nAdditionalRRs uint16
-	message        []byte
-}
+const headerLen = 12
 
-type nameParser struct {
-	bytesToParse []byte
-}
-
-type DNSName struct {
+type Question struct {
 	Name  string
 	Type  uint16
 	Class uint16
 }
 
-func (c *nameParser) parseName(offset int) (string, int, error) {
-	if offset < 0 {
-		return "", 0, ErrorInvalidInput
+type DNSMessage struct {
+	Question Question
+	flags    uint16
+	packet   []byte // full packet; all offsets are packet-relative
+	qEnd     int    // offset where the question section ends
+}
+
+var (
+	ErrInvalidInput = errors.New("invalid DNS input")
+	ErrTruncatedDNS = errors.New("DNS message is truncated")
+
+	ErrUnsupportedQuestionCount = errors.New("DNS message must have exactly one question")
+)
+
+// parseName returns the (possibly compressed) name at off and the offset just after it in b.
+func parseName(b []byte, off int) (string, int, error) {
+	if off < 0 {
+		return "", 0, ErrInvalidInput
 	}
-	if offset >= len(c.bytesToParse) {
-		return "", 0, ErrorTruncatedDNS
+	if off >= len(b) {
+		return "", 0, ErrTruncatedDNS
 	}
-	nextStringLength := c.bytesToParse[offset]
-	partialNames := make([]string, 0, 3)
+	labelLen := b[off]
+	var labels []string
 	nameLength := 1 // Include the terminating root label.
 
-	i := offset + 1
-	for nextStringLength > 0 {
-		if nextStringLength&0xC0 == 0xC0 {
-			if i >= len(c.bytesToParse) {
-				return "", 0, ErrorTruncatedDNS
+	i := off + 1
+	for labelLen > 0 {
+		if labelLen&0xC0 == 0xC0 {
+			if i >= len(b) {
+				return "", 0, ErrTruncatedDNS
 			}
-			packetOffset := int(nextStringLength&0x3F)<<8 | int(c.bytesToParse[i])
-			target := packetOffset - 12
-			if target < 0 || target >= len(c.bytesToParse) || target >= offset { // pointers must point backward
-				return "", 0, ErrorInvalidInput
+			target := int(labelLen&0x3F)<<8 | int(b[i])
+			if target < headerLen || target >= len(b) || target >= off { // pointers must point backward
+				return "", 0, ErrInvalidInput
 			}
 
-			name, _, err := c.parseName(target)
+			name, _, err := parseName(b, target)
 			if err != nil {
 				return "", 0, err
 			}
 			if name != "" {
 				if nameLength+len(name)+1 > 255 {
-					return "", 0, ErrorInvalidInput
+					return "", 0, ErrInvalidInput
 				}
-				partialNames = append(partialNames, name)
+				labels = append(labels, name)
 			}
-			return strings.Join(partialNames, "."), i + 1, nil
+			return strings.Join(labels, "."), i + 1, nil
 		}
-		if nextStringLength&0xC0 != 0 {
-			return "", 0, ErrorInvalidInput
+		if labelLen&0xC0 != 0 {
+			return "", 0, ErrInvalidInput
 		}
-		nameLength += int(nextStringLength) + 1
+		nameLength += int(labelLen) + 1
 		if nameLength > 255 {
-			return "", 0, ErrorInvalidInput
+			return "", 0, ErrInvalidInput
 		}
-		if int(nextStringLength) >= len(c.bytesToParse)-i {
-			return "", 0, ErrorTruncatedDNS
+		if int(labelLen) >= len(b)-i {
+			return "", 0, ErrTruncatedDNS
 		}
 
-		str := string(c.bytesToParse[i : i+int(nextStringLength)])
-		partialNames = append(partialNames, str)
+		labels = append(labels, string(b[i:i+int(labelLen)]))
 
-		i += int(nextStringLength)
-		nextStringLength = c.bytesToParse[i]
-		i += 1
+		i += int(labelLen)
+		labelLen = b[i]
+		i++
 	}
 
-	name := strings.Join(partialNames, ".")
-
-	return name, i, nil
+	return strings.Join(labels, "."), i, nil
 }
 
-func (c *nameParser) parseQuestion(offset int) (DNSName, int, error) {
-	name, nextOffset, err := c.parseName(offset)
+func parseQuestion(b []byte, off int) (Question, int, error) {
+	name, next, err := parseName(b, off)
 	if err != nil {
-		return DNSName{}, 0, err
+		return Question{}, 0, err
 	}
-	if len(c.bytesToParse)-nextOffset < 4 {
-		return DNSName{}, 0, ErrorTruncatedDNS
+	if len(b)-next < 4 {
+		return Question{}, 0, ErrTruncatedDNS
 	}
-	qType := binary.BigEndian.Uint16(c.bytesToParse[nextOffset : nextOffset+2])
-	qClass := binary.BigEndian.Uint16(c.bytesToParse[nextOffset+2 : nextOffset+4])
-
-	return DNSName{Name: name, Type: qType, Class: qClass}, nextOffset + 4, nil
+	return Question{
+		Name:  name,
+		Type:  binary.BigEndian.Uint16(b[next:]),
+		Class: binary.BigEndian.Uint16(b[next+2:]),
+	}, next + 4, nil
 }
 
-var (
-	ErrorInvalidInput = errors.New("Input is an invalid input")
-	ErrorTruncatedDNS = errors.New("DNS message is truncated")
-
-	ErrorUnsupportedQuestionCount = errors.New("DNS message must have exactly one question")
-)
-
-func (m DNSMessage) Questions() ([]DNSName, error) {
-	qs, _, err := m.parseQuestions()
-	return qs, err
-}
-
-// parseQuestions returns the questions and the offset in m.message where the question section ends.
-func (m DNSMessage) parseQuestions() ([]DNSName, int, error) {
-	p := nameParser{bytesToParse: m.message}
-	// A question needs at least 5 bytes, so cap the preallocation by message size, not the header count.
-	questions := make([]DNSName, 0, min(int(m.nQuestions), len(m.message)/5))
-	offset := 0
-	for range m.nQuestions {
-		q, next, err := p.parseQuestion(offset)
-		if err != nil {
-			return nil, 0, err
-		}
-		questions = append(questions, q)
-		offset = next
+// ParseDNSMessage parses the header and the single question. The packet is retained, not copied.
+func ParseDNSMessage(packet []byte) (DNSMessage, error) {
+	if len(packet) < headerLen {
+		return DNSMessage{}, ErrTruncatedDNS
 	}
-	return questions, offset, nil
-}
-
-func ParseDNSMessage(message []byte) (DNSMessage, error) {
-	if len(message) < 12 {
-		return DNSMessage{}, ErrorTruncatedDNS
+	if binary.BigEndian.Uint16(packet[4:6]) != 1 {
+		return DNSMessage{}, ErrUnsupportedQuestionCount
 	}
-
-	if n := binary.BigEndian.Uint16(message[4:6]); n != maxQuestions {
-		return DNSMessage{}, ErrorUnsupportedQuestionCount
+	q, end, err := parseQuestion(packet, headerLen)
+	if err != nil {
+		return DNSMessage{}, err
 	}
-
-	id := binary.BigEndian.Uint16(message[:2])
-	flags := binary.BigEndian.Uint16(message[2:4])
-	noOfQuestions := binary.BigEndian.Uint16(message[4:6])
-	numberOfAnswerRRs := binary.BigEndian.Uint16(message[6:8])
-	numberOfAuthorityRRs := binary.BigEndian.Uint16(message[8:10])
-	numberOfAdditionalRRs := binary.BigEndian.Uint16(message[10:12])
-
 	return DNSMessage{
-		id:             id,
-		flags:          flags,
-		nQuestions:     noOfQuestions,
-		nAnswerRRs:     numberOfAnswerRRs,
-		nAuthorityRRs:  numberOfAuthorityRRs,
-		nAdditionalRRs: numberOfAdditionalRRs,
-		message:        message[12:],
+		Question: q,
+		flags:    binary.BigEndian.Uint16(packet[2:4]),
+		packet:   packet,
+		qEnd:     end,
 	}, nil
 }
-
-// maxQuestions bounds per-packet parse work; real resolvers send exactly one.
-const maxQuestions = 1
 
 const (
 	flagQR        = 0x8000          // response
@@ -176,49 +137,37 @@ func (m DNSMessage) IsResponse() bool { return m.flags&flagQR != 0 }
 
 // ErrorResponse builds a header-only reply for an unparseable query; nil if query is too short or is itself a response.
 func ErrorResponse(query []byte, rcode uint16) []byte {
-	if len(query) < 12 {
+	if len(query) < headerLen {
 		return nil
 	}
 	flags := binary.BigEndian.Uint16(query[2:4])
 	if flags&flagQR != 0 {
 		return nil
 	}
-	resp := make([]byte, 12)
+	resp := make([]byte, headerLen)
 	copy(resp, query[:2])
 	binary.BigEndian.PutUint16(resp[2:4], flags&flagOpcodeRD|flagQR|flagRA|rcode)
 	return resp
 }
 
 // BlockResponse builds an NXDOMAIN reply that echoes only the header and question section.
-func (m DNSMessage) BlockResponse() ([]byte, error) { return m.Response(rcodeNXDomain) }
+func (m DNSMessage) BlockResponse() []byte { return m.Response(rcodeNXDomain) }
 
 // Response builds a reply with the given rcode that echoes only the header and question section.
-func (m DNSMessage) Response(rcode uint16) ([]byte, error) {
-	_, end, err := m.parseQuestions()
-	if err != nil {
-		return nil, err
-	}
-	flags := m.flags&flagOpcodeRD | flagQR | flagRA | rcode
-	response := make([]byte, 0, 12+end)
-	response = binary.BigEndian.AppendUint16(response, m.id)
-	response = binary.BigEndian.AppendUint16(response, flags)
-	response = binary.BigEndian.AppendUint16(response, m.nQuestions)
-	response = binary.BigEndian.AppendUint16(response, 0)
-	response = binary.BigEndian.AppendUint16(response, 0)
-	response = binary.BigEndian.AppendUint16(response, 0)
-	return append(response, m.message[:end]...), nil
+func (m DNSMessage) Response(rcode uint16) []byte {
+	resp := make([]byte, headerLen, m.qEnd)
+	copy(resp, m.packet[:2])
+	binary.BigEndian.PutUint16(resp[2:], m.flags&flagOpcodeRD|flagQR|flagRA|rcode)
+	binary.BigEndian.PutUint16(resp[4:], 1)
+	return append(resp, m.packet[headerLen:m.qEnd]...)
 }
 
-// IsReplyTo reports whether reply is a response to query: same ID, QR set, same questions.
+// IsReplyTo reports whether reply is a response to query: same ID, QR set, same question.
 func IsReplyTo(query, reply []byte) bool {
-	if len(reply) < 12 || len(query) < 12 || reply[0] != query[0] || reply[1] != query[1] || reply[2]&0x80 == 0 {
+	if len(reply) < headerLen || len(query) < headerLen || reply[0] != query[0] || reply[1] != query[1] || reply[2]&(flagQR>>8) == 0 {
 		return false
 	}
 	qm, err := ParseDNSMessage(query)
-	if err != nil {
-		return false
-	}
-	qs, err := qm.Questions()
 	if err != nil {
 		return false
 	}
@@ -226,16 +175,8 @@ func IsReplyTo(query, reply []byte) bool {
 	if err != nil {
 		return false
 	}
-	rs, err := rm.Questions()
-	if err != nil || len(qs) != len(rs) {
-		return false
-	}
-	for i := range rs {
-		if !strings.EqualFold(qs[i].Name, rs[i].Name) || qs[i].Type != rs[i].Type || qs[i].Class != rs[i].Class {
-			return false
-		}
-	}
-	return true
+	q, r := qm.Question, rm.Question
+	return strings.EqualFold(q.Name, r.Name) && q.Type == r.Type && q.Class == r.Class
 }
 
 const (
@@ -245,6 +186,7 @@ const (
 )
 
 // skipName returns the offset after the (possibly compressed) name at off, or -1 if malformed.
+// It walks labels without decoding so UDPSize stays allocation-free on every query.
 func skipName(b []byte, off int) int {
 	for off < len(b) {
 		l := int(b[off])
@@ -273,12 +215,8 @@ func UDPSize(query []byte) int {
 	if err != nil {
 		return defaultUDPSize
 	}
-	_, off, err := m.parseQuestions()
-	if err != nil {
-		return defaultUDPSize
-	}
-	b := m.message
-	total := int(m.nAnswerRRs) + int(m.nAuthorityRRs) + int(m.nAdditionalRRs)
+	b, off := m.packet, m.qEnd
+	total := int(binary.BigEndian.Uint16(b[6:])) + int(binary.BigEndian.Uint16(b[8:])) + int(binary.BigEndian.Uint16(b[10:]))
 	for range total {
 		if off = skipName(b, off); off < 0 || off+10 > len(b) {
 			return defaultUDPSize
@@ -296,20 +234,23 @@ func UDPSize(query []byte) int {
 	return defaultUDPSize
 }
 
+// IsTruncated reports whether resp has the TC bit set.
+func IsTruncated(resp []byte) bool {
+	return len(resp) >= headerLen && resp[2]&(flagTC>>8) != 0
+}
+
 // TruncateResponse returns resp if it fits in limit bytes; otherwise a valid reply
 // with TC set holding only the header and question section.
 func TruncateResponse(resp []byte, limit int) []byte {
-	if len(resp) <= limit || len(resp) < 12 {
+	if len(resp) <= limit || len(resp) < headerLen {
 		return resp
 	}
-	out := make([]byte, 12)
+	out := make([]byte, headerLen)
 	copy(out, resp[:4])
 	out[2] |= flagTC >> 8
 	if m, err := ParseDNSMessage(resp); err == nil {
-		if _, end, err := m.parseQuestions(); err == nil {
-			binary.BigEndian.PutUint16(out[4:], m.nQuestions)
-			out = append(out, m.message[:end]...)
-		}
+		binary.BigEndian.PutUint16(out[4:], 1)
+		out = append(out, m.packet[headerLen:m.qEnd]...)
 	}
 	return out
 }

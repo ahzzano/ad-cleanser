@@ -13,7 +13,8 @@ import (
 
 func (c *Cleanser) serveUDP(conn net.PacketConn) error {
 	pool := NewSocketPool(c.workers, c.queueSize, func(j Job) error {
-		return c.handleUDP(conn, j.addr, j.query)
+		c.handleUDP(conn, j.addr, j.query)
+		return nil
 	})
 	defer pool.Close()
 
@@ -43,24 +44,24 @@ func (c *Cleanser) serveUDP(conn net.PacketConn) error {
 	}
 }
 
-func (c *Cleanser) handleUDP(conn net.PacketConn, peer net.Addr, query []byte) error {
-	resp, err := c.resolve(query, peer, c.forwardUDP)
-	if resp != nil {
-		resp = parser.TruncateResponse(resp, parser.UDPSize(query))
-		if werr := writeFull(conn, peer, resp); err == nil {
-			err = werr
-		}
+func (c *Cleanser) handleUDP(conn net.PacketConn, peer net.Addr, query []byte) {
+	resp := c.resolve(query, peer, c.forwardUDP)
+	if resp == nil {
+		return
 	}
-	return err
+	resp = parser.TruncateResponse(resp, parser.UDPSize(query))
+	if err := writeFull(conn, peer, resp); err != nil {
+		log.Printf("UDP write %s: %v", peer, err)
+	}
 }
 
 // forwardUDP queries upstream over UDP and retries over TCP if the reply is truncated.
 func (c *Cleanser) forwardUDP(query []byte) ([]byte, error) {
 	resp, err := exchangeUDP(c.upstream, query)
-	if err != nil || resp[2]&0x02 == 0 { // 0x02 is the TC flag
+	if err != nil || !parser.IsTruncated(resp) {
 		return resp, err
 	}
-	full, terr := exchangeTCP(c.upstream.String(), query)
+	full, terr := exchangeTCP(c.upstreamTCP, query)
 	if terr != nil {
 		log.Printf("TCP retry failed, returning truncated reply: %v", terr)
 		return resp, nil

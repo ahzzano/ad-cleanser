@@ -22,12 +22,13 @@ type CleanserOpts struct {
 }
 
 type Cleanser struct {
-	addr      string
-	upstream  *net.UDPAddr
-	workers   int
-	queueSize int
-	blacklist blacklist.Blacklist
-	conns     connTracker
+	addr        string
+	upstream    *net.UDPAddr
+	upstreamTCP string
+	workers     int
+	queueSize   int
+	blacklist   blacklist.Blacklist
+	conns       connTracker
 }
 
 // NewCleanser resolves the upstream and rejects forwarding loops before anything is bound.
@@ -59,7 +60,7 @@ func NewCleanser(opts *CleanserOpts, blacklist blacklist.Blacklist) (*Cleanser, 
 	if exposedAddr(listen) {
 		log.Printf("warning: listening on %s may expose an open resolver; bind to a LAN or loopback address", opts.Addr)
 	}
-	return &Cleanser{addr: opts.Addr, upstream: upstream, workers: opts.Workers, queueSize: opts.QueueSize, blacklist: blacklist}, nil
+	return &Cleanser{addr: opts.Addr, upstream: upstream, upstreamTCP: upstream.String(), workers: opts.Workers, queueSize: opts.QueueSize, blacklist: blacklist}, nil
 }
 
 // errShutdown is returned by the serve loops when they stop because Run asked them to.
@@ -105,53 +106,29 @@ func (c *Cleanser) Run(ctx context.Context) error {
 // forwardFunc sends a query upstream over the caller's transport and returns the reply.
 type forwardFunc func(query []byte) ([]byte, error)
 
-// resolve decides the reply for a query. A non-nil resp must always be sent, even
-// when err != nil (err is for logging); a nil resp means send nothing.
-func (c *Cleanser) resolve(query []byte, peer net.Addr, fwd forwardFunc) ([]byte, error) {
+// resolve decides the reply for a query and logs its own failures; nil means send nothing.
+func (c *Cleanser) resolve(query []byte, peer net.Addr, fwd forwardFunc) []byte {
 	msg, err := parser.ParseDNSMessage(query)
 	if err != nil {
-		return parser.ErrorResponse(query, parser.FormErr), err
+		log.Printf("parse query from %s: %v", peer, err)
+		return parser.ErrorResponse(query, parser.FormErr)
 	}
 	if msg.IsResponse() {
-		return nil, nil
-	}
-	// fail pairs an error rcode reply with cause.
-	fail := func(rcode uint16, cause error) ([]byte, error) {
-		r, rerr := msg.Response(rcode)
-		if rerr != nil {
-			r = nil
-		}
-		return r, cause
+		return nil
 	}
 	if msg.Opcode() != 0 {
-		return fail(parser.NotImp, fmt.Errorf("unsupported opcode %d", msg.Opcode()))
+		log.Printf("unsupported opcode %d from %s", msg.Opcode(), peer)
+		return msg.Response(parser.NotImp)
 	}
-	resp, err := c.blockedResponse(msg, peer)
+	if c.blacklist.IsBlocked(msg.Question.Name) {
+		log.Printf("blocked %q from %s", msg.Question.Name, peer)
+		return msg.BlockResponse()
+	}
+	resp, err := fwd(query)
 	if err != nil {
-		return fail(parser.FormErr, err)
-	}
-	if resp != nil {
-		return resp, nil
-	}
-	resp, err = fwd(query)
-	if err != nil {
-		return fail(parser.ServFail, err)
+		log.Printf("forward for %s: %v", peer, err)
+		return msg.Response(parser.ServFail)
 	}
 	log.Printf("forward: %s (%d bytes)", peer, len(query))
-	return resp, nil
-}
-
-// blockedResponse returns the block response if any question is blacklisted, else nil, nil.
-func (c *Cleanser) blockedResponse(msg parser.DNSMessage, peer net.Addr) ([]byte, error) {
-	questions, err := msg.Questions()
-	if err != nil {
-		return nil, err
-	}
-	for _, q := range questions {
-		if c.blacklist.IsBlocked(q.Name) {
-			log.Printf("blocked %q from %s", q.Name, peer)
-			return msg.BlockResponse()
-		}
-	}
-	return nil, nil
+	return resp
 }

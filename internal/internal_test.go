@@ -78,22 +78,19 @@ func TestResolve(t *testing.T) {
 		c        *Cleanser
 		query    []byte
 		wantNil  bool
-		wantErr  bool
 		wantCode int
 		wantEcho bool
 	}{
-		{"malformed", mk(up), []byte{1, 2, 3}, true, true, 0, false}, // too short for any reply
-		{"response packet", mk(up), dnsQuery(2, 0x81, "ok.example.com"), true, false, 0, false},
-		{"bad opcode", mk(up), dnsQuery(3, 0x09, "ok.example.com"), false, true, 4, false},
-		{"blocked", mk(up), dnsQuery(4, 0x01, "ads.example.com"), false, false, 3, false},
-		{"forward", mk(up), good, false, false, 0, true},
-		{"timeout", mk(dead), good, false, true, 2, false},
+		{"malformed", mk(up), []byte{1, 2, 3}, true, 0, false}, // too short for any reply
+		{"response packet", mk(up), dnsQuery(2, 0x81, "ok.example.com"), true, 0, false},
+		{"bad opcode", mk(up), dnsQuery(3, 0x09, "ok.example.com"), false, 4, false},
+		{"blocked", mk(up), dnsQuery(4, 0x01, "ads.example.com"), false, 3, false},
+		{"forward", mk(up), good, false, 0, true},
+		{"bad question", mk(up), []byte{0, 9, 0x01, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 1, 0, 1}, false, 1, false},
+		{"timeout", mk(dead), good, false, 2, false},
 	}
 	for _, tc := range tests {
-		resp, err := tc.c.resolve(tc.query, peer, func(q []byte) ([]byte, error) { return exchangeUDP(tc.c.upstream, q) })
-		if (err != nil) != tc.wantErr {
-			t.Errorf("%s: err=%v want err %v", tc.name, err, tc.wantErr)
-		}
+		resp := tc.c.resolve(tc.query, peer, func(q []byte) ([]byte, error) { return exchangeUDP(tc.c.upstream, q) })
 		if (resp == nil) != tc.wantNil {
 			t.Errorf("%s: resp nil=%v want %v", tc.name, resp == nil, tc.wantNil)
 			continue
@@ -129,7 +126,7 @@ func TestForwardUDPTruncatedRetriesTCP(t *testing.T) {
 			up.WriteTo(r, a)
 		}
 	}()
-	c := &Cleanser{upstream: addr}
+	c := &Cleanser{upstream: addr, upstreamTCP: addr.String()}
 	query := dnsQuery(7, 0x01, "big.example.com")
 
 	// No TCP listener yet: the truncated reply is returned.
