@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	blacklist "ad-cleanser/internal/blacklist"
+	"ad-cleanser/internal/blacklist"
 )
 
 func TestIsSelf(t *testing.T) {
@@ -68,7 +68,7 @@ func TestResolve(t *testing.T) {
 	defer dead.Close()
 
 	mk := func(u net.PacketConn) *Cleanser {
-		return &Cleanser{upstream: u.LocalAddr().(*net.UDPAddr), blacklist: blacklist.New([]string{"ads.example.com"})}
+		return &Cleanser{upstream: u.LocalAddr().(*net.UDPAddr), blacklist: blacklist.New([]string{"ads.example.com"}, nil)}
 	}
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}
 	good := dnsQuery(1, 0x01, "ok.example.com")
@@ -175,7 +175,7 @@ func TestNewCleanserValidatesOpts(t *testing.T) {
 		"workers": {CleanserOpts{Addr: ":0", DNSAddresses: addrs}, "workers must be positive"},
 		"valid":   {CleanserOpts{Addr: ":0", DNSAddresses: addrs, Workers: 1}, ""},
 	} {
-		_, err := NewCleanser(&tc.opts, blacklist.Blacklist{})
+		_, err := NewCleanser(&tc.opts, blacklist.New(nil, nil))
 		if tc.want == "" && err != nil || tc.want != "" && (err == nil || err.Error() != tc.want) {
 			t.Errorf("%s: got %v want %q", name, err, tc.want)
 		}

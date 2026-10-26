@@ -1,9 +1,9 @@
-package blocklist
+package blacklist
 
 import "testing"
 
 func TestIsBlocked(t *testing.T) {
-	bl := New([]string{"Example.Ad.com.", "", "com"})
+	bl := New([]string{"Example.Ad.com.", "", "com"}, nil)
 	for name, want := range map[string]bool{
 		"example.ad.com":     true,
 		"EXAMPLE.AD.COM":     true,
@@ -19,16 +19,13 @@ func TestIsBlocked(t *testing.T) {
 			t.Errorf("IsBlocked(%q) = %v, want %v", name, got, want)
 		}
 	}
-	if New(nil).IsBlocked("example.com") {
+	if New(nil, nil).IsBlocked("example.com") {
 		t.Error("empty blacklist blocked a name")
 	}
 }
 
 func TestAllow(t *testing.T) {
-	bl := New([]string{"example.com", "both.com"})
-	bl.Allow("Ads.Example.com.")
-	bl.Allow("both.com")
-	bl.Allow("")
+	bl := New([]string{"example.com", "both.com"}, []string{"Ads.Example.com.", "both.com", ""})
 	for name, want := range map[string]bool{
 		"ads.example.com":   false,
 		"x.ads.example.com": false,
@@ -41,12 +38,10 @@ func TestAllow(t *testing.T) {
 		}
 	}
 
-	specific := New([]string{"ads.example.com"})
-	specific.Allow("example.com")
+	specific := New([]string{"ads.example.com"}, []string{"example.com"})
 	if !specific.IsBlocked("ads.example.com") {
 		t.Error("allowed parent unblocked a more specific blocked name")
 	}
 
-	empty := New(nil)
-	empty.Allow("example.com") // must not panic
+	New(nil, []string{"example.com"}) // must not panic
 }

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	blacklist "ad-cleanser/internal/blacklist"
+	"ad-cleanser/internal/blacklist"
 )
 
 // slowUpstream echoes queries with QR set after delay, over UDP and TCP on one port.
@@ -65,10 +65,10 @@ func slowUpstream(t *testing.T, delay time.Duration, got chan<- struct{}) *net.U
 
 // startCleanser runs a Cleanser and returns its address, cancel func and Run's result channel.
 func startCleanser(t *testing.T, upstream *net.UDPAddr, workers int) (string, context.CancelFunc, chan error) {
-	return startCleanserBL(t, upstream, workers, blacklist.Blacklist{})
+	return startCleanserBL(t, upstream, workers, blacklist.New(nil, nil))
 }
 
-func startCleanserBL(t *testing.T, upstream *net.UDPAddr, workers int, bl blacklist.Blacklist) (string, context.CancelFunc, chan error) {
+func startCleanserBL(t *testing.T, upstream *net.UDPAddr, workers int, bl *blacklist.Blacklist) (string, context.CancelFunc, chan error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

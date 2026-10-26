@@ -11,11 +11,11 @@ queries) are off unless `log_queries: true` is set in the config; errors are alw
 Bind to a loopback or LAN address. A public bind (`:53`, `0.0.0.0`) lets anyone use the
 server for reflection attacks; startup logs a warning in that case.
 
-Programmatic callers pass options and an explicit `blocklist.Blacklist` value to
-`internal.NewCleanser(opts, blacklist)`. The `blocklist` package is imported from
-`ad-cleanser/internal/blacklist`; use `blocklist.New(nil)` for an empty blacklist.
+Programmatic callers pass options and an explicit `blacklist.Blacklist` value to
+`internal.NewCleanser(opts, blacklist)`. The `blacklist` package is imported from
+`ad-cleanser/internal/blacklist`; use `blacklist.New(nil)` for an empty blacklist.
 The constructor stores this dependency, and the command supplies
-`blocklist.New([]string{"example.ad.com"})`. A UDP query with exactly one question is required; others are dropped without a reply.
+`blacklist.New([]string{"example.ad.com"})`. A UDP query with exactly one question is required; others are dropped without a reply.
 Blacklist matching is case-insensitive and also covers subdomains. The config lists
 `domains.blocked` and `domains.allowed`; allowed names (and their subdomains) are exempt,
 and the most specific match wins, so allowing `example.com` does not unblock a blocked

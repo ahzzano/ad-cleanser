@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	blacklist "ad-cleanser/internal/blacklist"
+	"ad-cleanser/internal/blacklist"
 	"ad-cleanser/internal/parser"
 )
 
@@ -27,13 +27,13 @@ type Cleanser struct {
 	upstream    *net.UDPAddr
 	upstreamTCP string
 	workers     int
-	blacklist   blacklist.Blacklist
+	blacklist   *blacklist.Blacklist
 	conns       connTracker
 	logQueries  bool
 }
 
 // NewCleanser resolves the upstream and rejects forwarding loops before anything is bound.
-func NewCleanser(opts *CleanserOpts, blacklist blacklist.Blacklist) (*Cleanser, error) {
+func NewCleanser(opts *CleanserOpts, blacklist *blacklist.Blacklist) (*Cleanser, error) {
 	switch {
 	case len(opts.DNSAddresses) == 0:
 		return nil, errors.New("dns_addresses must not be empty")
