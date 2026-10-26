@@ -43,27 +43,29 @@ func (c *Cleanser) handleUDP(conn net.PacketConn, peer net.Addr, query []byte) {
 	if resp == nil {
 		return
 	}
-	resp = parser.TruncateResponse(resp, parser.UDPSize(query))
 	if err := writeFull(conn, peer, resp); err != nil {
 		log.Printf("UDP write %s: %v", peer, err)
 	}
 }
 
 // forwardUDP queries upstream over UDP and retries over TCP if the reply is truncated.
-func (c *Cleanser) forwardUDP(query []byte) ([]byte, error) {
-	resp, err := exchangeUDP(c.upstream, query)
-	if err != nil || !parser.IsTruncated(resp) {
-		return resp, err
+// The result is cut to the size the client accepts.
+func (c *Cleanser) forwardUDP(q parser.DNSMessage) ([]byte, error) {
+	resp, err := exchangeUDP(c.upstream, q)
+	if err != nil {
+		return nil, err
 	}
-	full, terr := exchangeTCP(c.upstreamTCP, query)
-	if terr != nil {
-		log.Printf("TCP retry failed, returning truncated reply: %v", terr)
-		return resp, nil
+	if parser.IsTruncated(resp) {
+		if full, terr := exchangeTCP(c.upstreamTCP, q); terr != nil {
+			log.Printf("TCP retry failed, returning truncated reply: %v", terr)
+		} else {
+			resp = full
+		}
 	}
-	return full, nil
+	return parser.TruncateResponse(resp, q.UDPSize()), nil
 }
 
-func exchangeUDP(upstreamAddr *net.UDPAddr, query []byte) ([]byte, error) {
+func exchangeUDP(upstreamAddr *net.UDPAddr, q parser.DNSMessage) ([]byte, error) {
 	reply := make([]byte, 65535)
 	upstreamConn, err := net.DialUDP("udp", nil, upstreamAddr)
 	if err != nil {
@@ -73,6 +75,7 @@ func exchangeUDP(upstreamAddr *net.UDPAddr, query []byte) ([]byte, error) {
 	if err := upstreamConn.SetDeadline(time.Now().Add(upstreamTimeout)); err != nil {
 		return nil, err
 	}
+	query := q.Bytes()
 	written, err := upstreamConn.Write(query)
 	if err != nil {
 		return nil, err
@@ -85,7 +88,7 @@ func exchangeUDP(upstreamAddr *net.UDPAddr, query []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if parser.IsReplyTo(query, reply[:n]) {
+		if q.IsReplyTo(reply[:n]) {
 			return reply[:n], nil
 		}
 		log.Printf("dropping mismatched upstream reply (%d bytes)", n)

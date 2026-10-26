@@ -37,7 +37,7 @@ func TestIsReplyTo(t *testing.T) {
 		{"short", []byte{1}, false},
 	}
 	for _, tc := range tests {
-		if got := IsReplyTo(query, tc.reply); got != tc.want {
+		if got := mustParse(t, query).IsReplyTo(tc.reply); got != tc.want {
 			t.Errorf("%s: got %v want %v", tc.name, got, tc.want)
 		}
 	}

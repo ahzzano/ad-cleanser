@@ -103,7 +103,7 @@ func (c *Cleanser) Run(ctx context.Context) error {
 }
 
 // forwardFunc sends a query upstream over the caller's transport and returns the reply.
-type forwardFunc func(query []byte) ([]byte, error)
+type forwardFunc func(q parser.DNSMessage) ([]byte, error)
 
 // resolve decides the reply for a query and logs its own failures; nil means send nothing.
 func (c *Cleanser) resolve(query []byte, peer net.Addr, fwd forwardFunc) []byte {
@@ -125,7 +125,7 @@ func (c *Cleanser) resolve(query []byte, peer net.Addr, fwd forwardFunc) []byte 
 		}
 		return msg.BlockResponse()
 	}
-	resp, err := fwd(query)
+	resp, err := fwd(msg)
 	if err != nil {
 		log.Printf("forward for %s: %v", peer, err)
 		return msg.Response(parser.ServFail)

@@ -146,7 +146,7 @@ func ErrorResponse(query []byte, rcode uint16) []byte {
 	}
 	resp := make([]byte, headerLen)
 	copy(resp, query[:2])
-	binary.BigEndian.PutUint16(resp[2:4], flags&flagOpcodeRD|flagQR|flagRA|rcode)
+	binary.BigEndian.PutUint16(resp[2:4], replyFlags(flags, rcode))
 	return resp
 }
 
@@ -173,28 +173,35 @@ func (m DNSMessage) BlockResponse() []byte {
 }
 
 // Response builds a reply with the given rcode that echoes only the header and question section.
-func (m DNSMessage) Response(rcode uint16) []byte {
+func (m DNSMessage) Response(rcode uint16) []byte { return m.reply(replyFlags(m.flags, rcode)) }
+
+// replyFlags keeps the query's opcode and RD and marks the message as a response with RA.
+func replyFlags(queryFlags, rcode uint16) uint16 {
+	return queryFlags&flagOpcodeRD | flagQR | flagRA | rcode
+}
+
+// reply builds a header-only reply (QDCOUNT=1, other counts 0) with m's ID and the given flags, followed by m's question.
+func (m DNSMessage) reply(flags uint16) []byte {
 	resp := make([]byte, headerLen, m.qEnd)
 	copy(resp, m.packet[:2])
-	binary.BigEndian.PutUint16(resp[2:], m.flags&flagOpcodeRD|flagQR|flagRA|rcode)
+	binary.BigEndian.PutUint16(resp[2:], flags)
 	binary.BigEndian.PutUint16(resp[4:], 1)
 	return append(resp, m.packet[headerLen:m.qEnd]...)
 }
 
-// IsReplyTo reports whether reply is a response to query: same ID, QR set, same question.
-func IsReplyTo(query, reply []byte) bool {
-	if len(reply) < headerLen || len(query) < headerLen || reply[0] != query[0] || reply[1] != query[1] || reply[2]&(flagQR>>8) == 0 {
-		return false
-	}
-	qm, err := ParseDNSMessage(query)
-	if err != nil {
+// Bytes returns the retained packet.
+func (m DNSMessage) Bytes() []byte { return m.packet }
+
+// IsReplyTo reports whether reply is a response to m: same ID, QR set, same question.
+func (m DNSMessage) IsReplyTo(reply []byte) bool {
+	if len(reply) < headerLen || reply[0] != m.packet[0] || reply[1] != m.packet[1] || reply[2]&(flagQR>>8) == 0 {
 		return false
 	}
 	rm, err := ParseDNSMessage(reply)
 	if err != nil {
 		return false
 	}
-	q, r := qm.Question, rm.Question
+	q, r := m.Question, rm.Question
 	return strings.EqualFold(q.Name, r.Name) && q.Type == r.Type && q.Class == r.Class
 }
 
@@ -229,11 +236,7 @@ func skipName(b []byte, off int) int {
 }
 
 // UDPSize returns the largest UDP reply the query's sender accepts: 512, or its EDNS0 payload size if larger.
-func UDPSize(query []byte) int {
-	m, err := ParseDNSMessage(query)
-	if err != nil {
-		return defaultUDPSize
-	}
+func (m DNSMessage) UDPSize() int {
 	b, off := m.packet, m.qEnd
 	total := int(binary.BigEndian.Uint16(b[6:])) + int(binary.BigEndian.Uint16(b[8:])) + int(binary.BigEndian.Uint16(b[10:]))
 	for range total {
@@ -264,12 +267,11 @@ func TruncateResponse(resp []byte, limit int) []byte {
 	if len(resp) <= limit || len(resp) < headerLen {
 		return resp
 	}
+	if m, err := ParseDNSMessage(resp); err == nil {
+		return m.reply(m.flags | flagTC)
+	}
 	out := make([]byte, headerLen)
 	copy(out, resp[:4])
 	out[2] |= flagTC >> 8
-	if m, err := ParseDNSMessage(resp); err == nil {
-		binary.BigEndian.PutUint16(out[4:], 1)
-		out = append(out, m.packet[headerLen:m.qEnd]...)
-	}
 	return out
 }

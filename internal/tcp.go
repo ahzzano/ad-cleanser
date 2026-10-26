@@ -74,7 +74,7 @@ func (c *Cleanser) serveTCP(listener net.Listener) error {
 	}
 }
 
-func exchangeTCP(upstream string, query []byte) ([]byte, error) {
+func exchangeTCP(upstream string, q parser.DNSMessage) ([]byte, error) {
 	conn, err := net.DialTimeout("tcp", upstream, upstreamTimeout)
 	if err != nil {
 		return nil, err
@@ -83,14 +83,14 @@ func exchangeTCP(upstream string, query []byte) ([]byte, error) {
 	if err := conn.SetDeadline(time.Now().Add(upstreamTimeout)); err != nil {
 		return nil, err
 	}
-	if err := writeFrame(conn, query); err != nil {
+	if err := writeFrame(conn, q.Bytes()); err != nil {
 		return nil, err
 	}
 	resp, err := readFrame(conn)
 	if err != nil {
 		return nil, err
 	}
-	if !parser.IsReplyTo(query, resp) {
+	if !q.IsReplyTo(resp) {
 		return nil, fmt.Errorf("mismatched upstream reply")
 	}
 	return resp, nil
@@ -98,7 +98,7 @@ func exchangeTCP(upstream string, query []byte) ([]byte, error) {
 
 func (c *Cleanser) handleTCP(conn net.Conn) {
 	defer conn.Close()
-	fwd := func(q []byte) ([]byte, error) { return exchangeTCP(c.upstreamTCP, q) }
+	fwd := func(q parser.DNSMessage) ([]byte, error) { return exchangeTCP(c.upstreamTCP, q) }
 	for {
 		if !c.conns.ArmIdle(conn) {
 			return

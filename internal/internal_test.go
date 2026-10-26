@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"ad-cleanser/internal/blacklist"
+	"ad-cleanser/internal/parser"
 )
 
 func TestIsSelf(t *testing.T) {
@@ -90,7 +91,7 @@ func TestResolve(t *testing.T) {
 		{"timeout", mk(dead), good, false, 2, false},
 	}
 	for _, tc := range tests {
-		resp := tc.c.resolve(tc.query, peer, func(q []byte) ([]byte, error) { return exchangeUDP(tc.c.upstream, q) })
+		resp := tc.c.resolve(tc.query, peer, func(q parser.DNSMessage) ([]byte, error) { return exchangeUDP(tc.c.upstream, q) })
 		if (resp == nil) != tc.wantNil {
 			t.Errorf("%s: resp nil=%v want %v", tc.name, resp == nil, tc.wantNil)
 			continue
@@ -127,7 +128,10 @@ func TestForwardUDPTruncatedRetriesTCP(t *testing.T) {
 		}
 	}()
 	c := &Cleanser{upstream: addr, upstreamTCP: addr.String()}
-	query := dnsQuery(7, 0x01, "big.example.com")
+	query, err := parser.ParseDNSMessage(dnsQuery(7, 0x01, "big.example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// No TCP listener yet: the truncated reply is returned.
 	resp, err := c.forwardUDP(query)
