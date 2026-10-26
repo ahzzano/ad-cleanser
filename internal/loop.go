@@ -10,7 +10,7 @@ func isSelf(listen, upstream *net.UDPAddr) (bool, error) {
 	if listen.Port != upstream.Port {
 		return false, nil
 	}
-	if len(listen.IP) == 0 || listen.IP.IsUnspecified() { // empty host (":53") has a nil IP
+	if wildcard(listen.IP) {
 		if upstream.IP.IsLoopback() || upstream.IP.IsUnspecified() {
 			return true, nil
 		}
@@ -29,4 +29,13 @@ func isSelf(listen, upstream *net.UDPAddr) (bool, error) {
 		return listen.IP.IsLoopback(), nil
 	}
 	return listen.IP.Equal(upstream.IP), nil
+}
+
+// wildcard reports whether ip is unset or unspecified (":53" has a nil IP).
+func wildcard(ip net.IP) bool { return len(ip) == 0 || ip.IsUnspecified() }
+
+// exposedAddr reports whether listen could be reachable from outside a home network.
+func exposedAddr(listen *net.UDPAddr) bool {
+	ip := listen.IP
+	return wildcard(ip) || !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
 }
