@@ -26,6 +26,9 @@ CASES = [
     ("tcp-allowed", "tcp", "youtube.com", dns.rcode.NOERROR, 1),
     ("udp-blocked", "udp", "example.ad.com", dns.rcode.NXDOMAIN, 0),
     ("tcp-blocked", "tcp", "example.ad.com", dns.rcode.NXDOMAIN, 0),
+    # subdomains of a blocked domain are blocked too
+    ("udp-blocked-sub", "udp", "s3.example.ad.com", dns.rcode.NXDOMAIN, 0),
+    ("tcp-blocked-sub", "tcp", "s3.example.ad.com", dns.rcode.NXDOMAIN, 0),
     # the UDP reply from upstream is truncated, so the proxy must retry over TCP
     ("udp-big", "udp", "big.example.com", dns.rcode.NOERROR, BIG_ANSWERS),
     ("tcp-big", "tcp", "big.example.com", dns.rcode.NOERROR, BIG_ANSWERS),
