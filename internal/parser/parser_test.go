@@ -138,7 +138,8 @@ func TestBlockResponse(t *testing.T) {
 			if message.Question != (Question{"example.com", 1, 1}) {
 				t.Fatalf("question = %+v", message.Question)
 			}
-			want, err := hex.DecodeString("123401000001000000000000" + question)
+			const soa = "c00c00060001" + "0000012c" + "0018c00cc00c" + "00000001" + "00000e10" + "00000258" + "00015180" + "0000012c"
+			want, err := hex.DecodeString("123401000001000000010000" + question + soa)
 			if err != nil {
 				t.Fatal(err)
 			}

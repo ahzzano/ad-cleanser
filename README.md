@@ -18,7 +18,8 @@ The constructor stores this dependency, and the command supplies
 `blocklist.New([]string{"example.ad.com"})`. A UDP query with exactly one question is required; others are dropped without a reply.
 Blacklist matching is case-insensitive and also covers subdomains. A UDP query with a blacklisted
 question name is not forwarded; it gets a locally built NXDOMAIN (header plus
-question section only, no EDNS OPT record).
+question section only, no EDNS OPT record) plus an SOA in the authority section so
+clients cache the block for 300 seconds.
 
 Configure `internal.CleanserOpts.DNSAddresses` using UDP `host:port` addresses
 (bracket IPv6 hosts). UDP serving requires a nonempty list and uses only its first

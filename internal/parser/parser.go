@@ -150,8 +150,27 @@ func ErrorResponse(query []byte, rcode uint16) []byte {
 	return resp
 }
 
-// BlockResponse builds an NXDOMAIN reply that echoes only the header and question section.
-func (m DNSMessage) BlockResponse() []byte { return m.Response(rcodeNXDomain) }
+// blockTTL is how long clients cache a blocked answer, so also how long an unblock takes to reach them.
+const blockTTL = 300
+
+// BlockResponse builds an NXDOMAIN reply echoing the question, with one SOA in the
+// authority section so clients negatively cache it (RFC 2308) for blockTTL seconds.
+func (m DNSMessage) BlockResponse() []byte {
+	resp := m.Response(rcodeNXDomain)
+	binary.BigEndian.PutUint16(resp[8:], 1) // NSCOUNT
+	const ptr = 0xC000 | headerLen          // the question name always starts at offset 12
+	resp = binary.BigEndian.AppendUint16(resp, ptr)
+	resp = binary.BigEndian.AppendUint16(resp, 6) // SOA
+	resp = binary.BigEndian.AppendUint16(resp, m.Question.Class)
+	resp = binary.BigEndian.AppendUint32(resp, blockTTL)
+	resp = binary.BigEndian.AppendUint16(resp, 24)              // RDLENGTH
+	resp = binary.BigEndian.AppendUint16(resp, ptr)             // MNAME
+	resp = binary.BigEndian.AppendUint16(resp, ptr)             // RNAME
+	for _, v := range []uint32{1, 3600, 600, 86400, blockTTL} { // serial, refresh, retry, expire, minimum
+		resp = binary.BigEndian.AppendUint32(resp, v)
+	}
+	return resp
+}
 
 // Response builds a reply with the given rcode that echoes only the header and question section.
 func (m DNSMessage) Response(rcode uint16) []byte {

@@ -61,6 +61,10 @@ def check(resp, rcode, answers):
     n = sum(len(rrset) for rrset in resp.answer)
     if n != answers:
         return f"{n} answers, want {answers}"
+    if rcode == dns.rcode.NXDOMAIN:
+        soa = [r for r in resp.authority if r.rdtype == dns.rdatatype.SOA]
+        if len(soa) != 1 or soa[0].ttl != 300:
+            return f"want one SOA with TTL 300 in authority, got {resp.authority}"
     return None
 
 
