@@ -16,9 +16,8 @@ type CleanserOpts struct {
 	Addr string
 	// DNSAddresses is required for UDP serving; only the first address is used.
 	DNSAddresses []string
-	// Workers is the UDP worker count; QueueSize is the pending-queue length.
-	Workers   int
-	QueueSize int
+	// Workers is the UDP worker count.
+	Workers int
 }
 
 type Cleanser struct {
@@ -26,7 +25,6 @@ type Cleanser struct {
 	upstream    *net.UDPAddr
 	upstreamTCP string
 	workers     int
-	queueSize   int
 	blacklist   blacklist.Blacklist
 	conns       connTracker
 }
@@ -38,8 +36,6 @@ func NewCleanser(opts *CleanserOpts, blacklist blacklist.Blacklist) (*Cleanser, 
 		return nil, errors.New("dns_addresses must not be empty")
 	case opts.Workers <= 0:
 		return nil, errors.New("workers must be positive")
-	case opts.QueueSize < 0:
-		return nil, errors.New("queue size must not be negative")
 	}
 	address := opts.DNSAddresses[0]
 	upstream, err := net.ResolveUDPAddr("udp", address)
@@ -60,7 +56,7 @@ func NewCleanser(opts *CleanserOpts, blacklist blacklist.Blacklist) (*Cleanser, 
 	if exposedAddr(listen) {
 		log.Printf("warning: listening on %s may expose an open resolver; bind to a LAN or loopback address", opts.Addr)
 	}
-	return &Cleanser{addr: opts.Addr, upstream: upstream, upstreamTCP: upstream.String(), workers: opts.Workers, queueSize: opts.QueueSize, blacklist: blacklist}, nil
+	return &Cleanser{addr: opts.Addr, upstream: upstream, upstreamTCP: upstream.String(), workers: opts.Workers, blacklist: blacklist}, nil
 }
 
 // errShutdown is returned by the serve loops when they stop because Run asked them to.
@@ -91,7 +87,7 @@ func (c *Cleanser) Run(ctx context.Context) error {
 	log.Print("shutting down")
 	c.conns.Shutdown()
 	tcp.Close()
-	udp.SetReadDeadline(time.Now()) // socket stays open so queued jobs can still reply
+	udp.SetReadDeadline(time.Now()) // socket stays open so in-flight queries can still reply
 
 	var errs []error
 	for range 2 {

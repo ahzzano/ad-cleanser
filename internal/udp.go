@@ -12,18 +12,15 @@ import (
 )
 
 func (c *Cleanser) serveUDP(conn net.PacketConn) error {
-	pool := NewSocketPool(c.workers, c.queueSize, func(j Job) error {
-		c.handleUDP(conn, j.addr, j.query)
-		return nil
-	})
-	defer pool.Close()
+	lim := newLimiter(c.workers)
+	defer lim.wait() // drains in-flight queries before Run closes the socket
 
 	var buf [65535]byte
 	for {
 		n, peer, err := conn.ReadFrom(buf[:])
 		if err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) { // only Run sets this, to stop us
-				return errShutdown // deferred pool.Close drains jobs before the socket closes
+				return errShutdown // deferred lim.wait drains queries before the socket closes
 			}
 			if isTransient(err) {
 				retryTransient("UDP read", err)
@@ -35,11 +32,8 @@ func (c *Cleanser) serveUDP(conn net.PacketConn) error {
 		q := make([]byte, n)
 		copy(q, buf[:n])
 
-		if !pool.ProcessRequest(Job{
-			addr:  peer,
-			query: q,
-		}) {
-			log.Print("UDP queue is full, dropping request")
+		if !lim.tryGo(func() { c.handleUDP(conn, peer, q) }) {
+			log.Print("UDP busy, dropping request")
 		}
 	}
 }

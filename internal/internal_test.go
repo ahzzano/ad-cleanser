@@ -171,10 +171,9 @@ func TestNewCleanserValidatesOpts(t *testing.T) {
 		opts CleanserOpts
 		want string
 	}{
-		"no dns":   {CleanserOpts{Addr: ":0", Workers: 1}, "dns_addresses must not be empty"},
-		"workers":  {CleanserOpts{Addr: ":0", DNSAddresses: addrs}, "workers must be positive"},
-		"negqueue": {CleanserOpts{Addr: ":0", DNSAddresses: addrs, Workers: 1, QueueSize: -1}, "queue size must not be negative"},
-		"valid":    {CleanserOpts{Addr: ":0", DNSAddresses: addrs, Workers: 1}, ""},
+		"no dns":  {CleanserOpts{Addr: ":0", Workers: 1}, "dns_addresses must not be empty"},
+		"workers": {CleanserOpts{Addr: ":0", DNSAddresses: addrs}, "workers must be positive"},
+		"valid":   {CleanserOpts{Addr: ":0", DNSAddresses: addrs, Workers: 1}, ""},
 	} {
 		_, err := NewCleanser(&tc.opts, blacklist.Blacklist{})
 		if tc.want == "" && err != nil || tc.want != "" && (err == nil || err.Error() != tc.want) {

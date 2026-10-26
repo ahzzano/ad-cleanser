@@ -14,7 +14,6 @@ type Config struct {
 	Addr         string   `yaml:"addr"`
 	DNSAddresses []string `yaml:"dns_addresses"`
 	Workers      int      `yaml:"workers"`
-	QueueSize    int      `yaml:"queue_size"`
 	Domains      []string `yaml:"domains"`
 }
 
@@ -33,5 +32,5 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) Opts() *internal.CleanserOpts {
-	return &internal.CleanserOpts{Addr: c.Addr, DNSAddresses: c.DNSAddresses, Workers: c.Workers, QueueSize: c.QueueSize}
+	return &internal.CleanserOpts{Addr: c.Addr, DNSAddresses: c.DNSAddresses, Workers: c.Workers}
 }

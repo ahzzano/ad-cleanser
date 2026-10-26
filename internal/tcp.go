@@ -53,9 +53,8 @@ func writeFrame(w io.Writer, msg []byte) error {
 }
 
 func (c *Cleanser) serveTCP(listener net.Listener) error {
-	sem := make(chan struct{}, maxTCPConns)
-	var wg sync.WaitGroup
-	defer wg.Wait()
+	lim := newLimiter(maxTCPConns)
+	defer lim.wait()
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -68,15 +67,7 @@ func (c *Cleanser) serveTCP(listener net.Listener) error {
 			}
 			return err
 		}
-		select {
-		case sem <- struct{}{}:
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer func() { <-sem }()
-				c.conns.Handle(conn, c.handleTCP)
-			}()
-		default:
+		if !lim.tryGo(func() { c.conns.Handle(conn, c.handleTCP) }) {
 			log.Print("TCP connection limit reached, rejecting")
 			conn.Close()
 		}
@@ -107,11 +98,6 @@ func exchangeTCP(upstream string, query []byte) ([]byte, error) {
 
 func (c *Cleanser) handleTCP(conn net.Conn) {
 	defer conn.Close()
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("TCP panic: %v", r)
-		}
-	}()
 	fwd := func(q []byte) ([]byte, error) { return exchangeTCP(c.upstreamTCP, q) }
 	for {
 		if !c.conns.ArmIdle(conn) {

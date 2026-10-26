@@ -75,7 +75,7 @@ func startCleanserBL(t *testing.T, upstream *net.UDPAddr, workers int, bl blackl
 	}
 	addr := l.Addr().String()
 	l.Close()
-	c, err := NewCleanser(&CleanserOpts{Addr: addr, DNSAddresses: []string{upstream.String()}, Workers: workers, QueueSize: 16}, bl)
+	c, err := NewCleanser(&CleanserOpts{Addr: addr, DNSAddresses: []string{upstream.String()}, Workers: workers}, bl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,19 +105,21 @@ func waitRun(t *testing.T, res chan error) {
 	}
 }
 
-func TestShutdownUDPAnswersInFlightAndQueued(t *testing.T) {
+func TestShutdownUDPAnswersInFlight(t *testing.T) {
 	got := make(chan struct{}, 16)
-	addr, cancel, res := startCleanser(t, slowUpstream(t, 300*time.Millisecond, got), 1)
+	const n = 3 // never more than workers: overflow is dropped, not queued
+	addr, cancel, res := startCleanser(t, slowUpstream(t, 300*time.Millisecond, got), n)
 	conn, err := net.Dial("udp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	const n = 3 // 1 worker: one in flight, two queued
 	for i := 0; i < n; i++ {
 		conn.Write(dnsQuery(byte(i+1), 0x01, "a.example.com"))
 	}
-	<-got // upstream holds the first query
+	for i := 0; i < n; i++ {
+		<-got // upstream holds every query
+	}
 	cancel()
 	conn.SetReadDeadline(time.Now().Add(4 * time.Second))
 	buf := make([]byte, 512)
