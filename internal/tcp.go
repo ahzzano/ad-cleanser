@@ -98,7 +98,10 @@ func exchangeTCP(upstream string, q parser.DNSMessage) ([]byte, error) {
 
 func (c *Cleanser) handleTCP(conn net.Conn) {
 	defer conn.Close()
-	fwd := func(q parser.DNSMessage) ([]byte, error) { return exchangeTCP(c.upstreamTCP, q) }
+	fwd := func(q parser.DNSMessage) ([]byte, error) {
+		resp, _, err := c.exchange(q, func(u *net.UDPAddr, q parser.DNSMessage) ([]byte, error) { return exchangeTCP(u.String(), q) })
+		return resp, err
+	}
 	for {
 		if !c.conns.ArmIdle(conn) {
 			return

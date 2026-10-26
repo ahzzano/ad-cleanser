@@ -51,12 +51,12 @@ func (c *Cleanser) handleUDP(conn net.PacketConn, peer net.Addr, query []byte) {
 // forwardUDP queries upstream over UDP and retries over TCP if the reply is truncated.
 // The result is cut to the size the client accepts.
 func (c *Cleanser) forwardUDP(q parser.DNSMessage) ([]byte, error) {
-	resp, err := exchangeUDP(c.upstream, q)
+	resp, u, err := c.exchange(q, exchangeUDP)
 	if err != nil {
 		return nil, err
 	}
 	if parser.IsTruncated(resp) {
-		if full, terr := exchangeTCP(c.upstreamTCP, q); terr != nil {
+		if full, terr := exchangeTCP(u.String(), q); terr != nil {
 			log.Printf("TCP retry failed, returning truncated reply: %v", terr)
 		} else {
 			resp = full

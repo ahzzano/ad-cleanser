@@ -121,7 +121,7 @@ func TestUDPSizeLimits(t *testing.T) {
 }
 
 func TestUDPSizeBlockedUnaffected(t *testing.T) {
-	addr, cancel, res := startCleanserBL(t, bigUpstream(t, 1500), 1, blacklist.New([]string{"ads.example.com"}, nil))
+	addr, cancel, res := startCleanserBL(t, []string{bigUpstream(t, 1500).String()}, 1, blacklist.New([]string{"ads.example.com"}, nil))
 	defer func() { cancel(); waitRun(t, res) }()
 	got := udpExchange(t, addr, dnsQuery(9, 1, "ads.example.com"))
 	if got[2]&0x02 != 0 || got[2]&0x80 == 0 || len(got) > 512 {

@@ -1,7 +1,10 @@
 addr: 127.0.0.1:53
 # dns_addresses: ["127.0.0.1:25565"]
-dns_addresses: ["1.1.1.1:53"]
-workers: 16
+# tried in order with failover; the upstream that last answered is tried first
+dns_addresses:
+    - 1.1.1.1:53
+    - 8.8.8.8:53
+workers: 32
 log_queries: false
 domains:
     allowed:

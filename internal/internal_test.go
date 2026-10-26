@@ -69,7 +69,7 @@ func TestResolve(t *testing.T) {
 	defer dead.Close()
 
 	mk := func(u net.PacketConn) *Cleanser {
-		return &Cleanser{upstream: u.LocalAddr().(*net.UDPAddr), blacklist: blacklist.New([]string{"ads.example.com"}, nil)}
+		return &Cleanser{upstreams: []*net.UDPAddr{u.LocalAddr().(*net.UDPAddr)}, blacklist: blacklist.New([]string{"ads.example.com"}, nil)}
 	}
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}
 	good := dnsQuery(1, 0x01, "ok.example.com")
@@ -91,7 +91,7 @@ func TestResolve(t *testing.T) {
 		{"timeout", mk(dead), good, false, 2, false},
 	}
 	for _, tc := range tests {
-		resp := tc.c.resolve(tc.query, peer, func(q parser.DNSMessage) ([]byte, error) { return exchangeUDP(tc.c.upstream, q) })
+		resp := tc.c.resolve(tc.query, peer, func(q parser.DNSMessage) ([]byte, error) { return exchangeUDP(tc.c.upstreams[0], q) })
 		if (resp == nil) != tc.wantNil {
 			t.Errorf("%s: resp nil=%v want %v", tc.name, resp == nil, tc.wantNil)
 			continue
@@ -127,7 +127,7 @@ func TestForwardUDPTruncatedRetriesTCP(t *testing.T) {
 			up.WriteTo(r, a)
 		}
 	}()
-	c := &Cleanser{upstream: addr, upstreamTCP: addr.String()}
+	c := &Cleanser{upstreams: []*net.UDPAddr{addr}}
 	query, err := parser.ParseDNSMessage(dnsQuery(7, 0x01, "big.example.com"))
 	if err != nil {
 		t.Fatal(err)
@@ -178,6 +178,8 @@ func TestNewCleanserValidatesOpts(t *testing.T) {
 		"no dns":  {CleanserOpts{Addr: ":0", Workers: 1}, "dns_addresses must not be empty"},
 		"workers": {CleanserOpts{Addr: ":0", DNSAddresses: addrs}, "workers must be positive"},
 		"valid":   {CleanserOpts{Addr: ":0", DNSAddresses: addrs, Workers: 1}, ""},
+		"loop in second": {CleanserOpts{Addr: "127.0.0.1:5353", DNSAddresses: []string{"8.8.8.8:53", "127.0.0.1:5353"}, Workers: 1},
+			"upstream 127.0.0.1:5353 is this server (127.0.0.1:5353): forwarding loop"},
 	} {
 		_, err := NewCleanser(&tc.opts, blacklist.New(nil, nil))
 		if tc.want == "" && err != nil || tc.want != "" && (err == nil || err.Error() != tc.want) {

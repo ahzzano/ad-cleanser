@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"ad-cleanser/internal/blacklist"
@@ -14,7 +15,7 @@ import (
 
 type CleanserOpts struct {
 	Addr string
-	// DNSAddresses is required for UDP serving; only the first address is used.
+	// DNSAddresses must not be empty; addresses are tried in order, failing over on error.
 	DNSAddresses []string
 	// Workers is the UDP worker count.
 	Workers int
@@ -23,13 +24,13 @@ type CleanserOpts struct {
 }
 
 type Cleanser struct {
-	addr        string
-	upstream    *net.UDPAddr
-	upstreamTCP string
-	workers     int
-	blacklist   *blacklist.Blacklist
-	conns       connTracker
-	logQueries  bool
+	addr       string
+	upstreams  []*net.UDPAddr
+	preferred  atomic.Int32 // index of the last upstream that answered
+	workers    int
+	blacklist  *blacklist.Blacklist
+	conns      connTracker
+	logQueries bool
 }
 
 // NewCleanser resolves the upstream and rejects forwarding loops before anything is bound.
@@ -40,26 +41,55 @@ func NewCleanser(opts *CleanserOpts, blacklist *blacklist.Blacklist) (*Cleanser,
 	case opts.Workers <= 0:
 		return nil, errors.New("workers must be positive")
 	}
-	address := opts.DNSAddresses[0]
-	upstream, err := net.ResolveUDPAddr("udp", address)
-	if err != nil {
-		return nil, fmt.Errorf("resolve DNS address %q: %w", address, err)
-	}
 	listen, err := net.ResolveUDPAddr("udp", opts.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("resolve listen address %q: %w", opts.Addr, err)
 	}
-	self, err := isSelf(listen, upstream)
-	if err != nil {
-		return nil, err
-	}
-	if self {
-		return nil, fmt.Errorf("upstream %s is this server (%s): forwarding loop", upstream, opts.Addr)
+	upstreams := make([]*net.UDPAddr, 0, len(opts.DNSAddresses))
+	for _, address := range opts.DNSAddresses {
+		upstream, err := net.ResolveUDPAddr("udp", address)
+		if err != nil {
+			return nil, fmt.Errorf("resolve DNS address %q: %w", address, err)
+		}
+		self, err := isSelf(listen, upstream)
+		if err != nil {
+			return nil, err
+		}
+		if self {
+			return nil, fmt.Errorf("upstream %s is this server (%s): forwarding loop", upstream, opts.Addr)
+		}
+		upstreams = append(upstreams, upstream)
 	}
 	if exposedAddr(listen) {
 		log.Printf("warning: listening on %s may expose an open resolver; bind to a LAN or loopback address", opts.Addr)
 	}
-	return &Cleanser{addr: opts.Addr, upstream: upstream, upstreamTCP: upstream.String(), workers: opts.Workers, blacklist: blacklist, logQueries: opts.LogQueries}, nil
+	return &Cleanser{addr: opts.Addr, upstreams: upstreams, workers: opts.Workers, blacklist: blacklist, logQueries: opts.LogQueries}, nil
+}
+
+// Upstream returns the primary upstream address (host:port).
+func (c *Cleanser) Upstream() string { return c.upstreams[0].String() }
+
+// shortcut: hardcoded attempt count, make it configurable if anyone asks.
+const upstreamAttempts = 2
+
+// exchange runs ex against up to upstreamAttempts upstreams, starting at the last one
+// that answered; with a single upstream it retries that one. Only transport errors fail
+// over: any valid reply, SERVFAIL included, is returned with the upstream that sent it.
+func (c *Cleanser) exchange(q parser.DNSMessage, ex func(*net.UDPAddr, parser.DNSMessage) ([]byte, error)) ([]byte, *net.UDPAddr, error) {
+	start := int(c.preferred.Load())
+	var errs []error
+	for i := range upstreamAttempts {
+		idx := (start + i) % len(c.upstreams)
+		u := c.upstreams[idx]
+		resp, err := ex(u, q)
+		if err == nil {
+			c.preferred.Store(int32(idx))
+			return resp, u, nil
+		}
+		log.Printf("upstream %s: %v", u, err)
+		errs = append(errs, err)
+	}
+	return nil, nil, errors.Join(errs...)
 }
 
 // errShutdown is returned by the serve loops when they stop because Run asked them to.

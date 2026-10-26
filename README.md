@@ -25,8 +25,9 @@ question section only, no EDNS OPT record) plus an SOA in the authority section 
 clients cache the block for 300 seconds.
 
 Configure `internal.CleanserOpts.DNSAddresses` using UDP `host:port` addresses
-(bracket IPv6 hosts). UDP serving requires a nonempty list and uses only its first
-entry, with no failover. An upstream that points at this server's own listen
+(bracket IPv6 hosts). The list must be nonempty. Each query gets two attempts
+(2s timeout each), starting at the upstream that last answered and failing over to
+the next entry on transport errors; with one entry it is retried once. An upstream that points at this server's own listen
 endpoint is rejected at startup to avoid a forwarding loop. Treat options and
 the blacklist's source slice as immutable after construction.
 
