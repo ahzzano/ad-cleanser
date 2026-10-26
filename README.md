@@ -16,7 +16,10 @@ Programmatic callers pass options and an explicit `blocklist.Blacklist` value to
 `ad-cleanser/internal/blacklist`; use `blocklist.New(nil)` for an empty blacklist.
 The constructor stores this dependency, and the command supplies
 `blocklist.New([]string{"example.ad.com"})`. A UDP query with exactly one question is required; others are dropped without a reply.
-Blacklist matching is case-insensitive and also covers subdomains. A UDP query with a blacklisted
+Blacklist matching is case-insensitive and also covers subdomains. The config lists
+`domains.blocked` and `domains.allowed`; allowed names (and their subdomains) are exempt,
+and the most specific match wins, so allowing `example.com` does not unblock a blocked
+`ads.example.com`. A UDP query with a blacklisted
 question name is not forwarded; it gets a locally built NXDOMAIN (header plus
 question section only, no EDNS OPT record) plus an SOA in the authority section so
 clients cache the block for 300 seconds.

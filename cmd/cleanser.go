@@ -21,7 +21,11 @@ func Execute() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	c, err := internal.NewCleanser(cfg.Opts(), blocklist.New(cfg.Domains))
+	bl := blocklist.New(cfg.Domains.Blocked)
+	for _, d := range cfg.Domains.Allowed {
+		bl.Allow(d)
+	}
+	c, err := internal.NewCleanser(cfg.Opts(), bl)
 	if err != nil {
 		log.Fatal(err)
 	}

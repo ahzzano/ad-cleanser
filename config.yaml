@@ -4,5 +4,7 @@ dns_addresses: ["1.1.1.1:53"]
 workers: 16
 log_queries: false
 domains:
-  - example.ad.com
-  - doubleclick.net
+    allowed:
+    blocked:
+      - example.ad.com
+      - doubleclick.net

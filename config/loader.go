@@ -14,8 +14,11 @@ type Config struct {
 	Addr         string   `yaml:"addr"`
 	DNSAddresses []string `yaml:"dns_addresses"`
 	Workers      int      `yaml:"workers"`
-	Domains      []string `yaml:"domains"`
-	LogQueries   bool     `yaml:"log_queries"`
+	Domains      struct {
+		Allowed []string `yaml:"allowed"`
+		Blocked []string `yaml:"blocked"`
+	} `yaml:"domains"`
+	LogQueries bool `yaml:"log_queries"`
 }
 
 func Load(path string) (*Config, error) {
