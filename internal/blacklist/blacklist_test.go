@@ -9,7 +9,7 @@ import (
 )
 
 // upstream is unused by these tests: httptest URLs are IP literals, so nothing is resolved.
-const upstream = "127.0.0.1:1"
+var upstream = []string{"127.0.0.1:1"}
 
 func TestParseHosts(t *testing.T) {
 	var got []string
@@ -75,6 +75,42 @@ func TestFetchLists(t *testing.T) {
 	} {
 		if got := bl.IsBlocked(name); got != want {
 			t.Errorf("IsBlocked(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// listServer serves a valid list at /ok, a 404 at /missing, an empty body at /empty,
+// and a body cut off mid-stream at /cut.
+func listServer(t *testing.T) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ok":
+			w.Write([]byte("0.0.0.0 new.example\n"))
+		case "/empty":
+		case "/cut":
+			w.Header().Set("Content-Length", "1000")
+			w.Write([]byte("0.0.0.0 partial.example\n"))
+			w.(http.Flusher).Flush()
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			conn.Close()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestFetchListsValidation(t *testing.T) {
+	srv := listServer(t)
+	if err := <-New(nil, nil).FetchLists([]string{srv.URL + "/ok"}, upstream); err != nil {
+		t.Errorf("valid list: %v", err)
+	}
+	for _, path := range []string{"/missing", "/empty", "/cut"} {
+		url := srv.URL + path
+		err := <-New(nil, nil).FetchLists([]string{srv.URL + "/ok", url}, upstream)
+		if err == nil || !strings.Contains(err.Error(), url) {
+			t.Errorf("%s: err = %v, want error naming the URL", path, err)
 		}
 	}
 }

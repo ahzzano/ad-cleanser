@@ -3,6 +3,8 @@ package blacklist
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -13,60 +15,95 @@ import (
 )
 
 // FetchLists downloads hosts-format lists in the background, one goroutine per URL,
-// and blocks each domain as soon as its line is parsed. Hostnames are resolved via
-// upstream, since this process may be the system resolver and not be listening yet.
-// A failed URL is logged and skipped. The returned channel closes once all lists are in.
-func (b *Blacklist) FetchLists(urls []string, upstream string) <-chan struct{} {
-	client := upstreamClient(upstream)
+// and blocks each domain as soon as its line is parsed. Hostnames are resolved via the
+// upstreams in order (first that answers wins), since this process may be the system
+// resolver and not be listening yet.
+// Once all lists are in, the returned channel delivers nil, or every per-URL failure
+// joined (failed lists may have been partially applied), and then closes.
+func (b *Blacklist) FetchLists(urls []string, upstreams []string) <-chan error {
+	client := upstreamClient(upstreams)
 	var wg sync.WaitGroup
-	for _, url := range urls {
-		wg.Go(func() { fetchList(client, url, b.Block) })
+	errs := make([]error, len(urls))
+	for i, url := range urls {
+		wg.Go(func() { errs[i] = fetchList(client, url, b.Block) })
 	}
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
 		wg.Wait()
-		b.mu.RLock()
-		n := len(b.blocked)
-		b.mu.RUnlock()
-		log.Printf("blacklist: %d domains blocked in total", n)
+		log.Printf("blacklist: %d domains blocked in total", b.Len())
+		done <- errors.Join(errs...)
 		close(done)
 	}()
 	return done
 }
 
-func upstreamClient(upstream string) *http.Client {
-	resolver := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, network, upstream)
-		},
+func upstreamClient(upstreams []string) *http.Client {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil || net.ParseIP(host) != nil {
+			return dialer.DialContext(ctx, network, addr)
+		}
+		ips, err := lookup(ctx, upstreams, host)
+		if err != nil {
+			return nil, err
+		}
+		var errs []error
+		for _, ip := range ips {
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			errs = append(errs, err)
+		}
+		return nil, errors.Join(errs...)
 	}
-	dialer := &net.Dialer{Timeout: 10 * time.Second, Resolver: resolver}
 	return &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: dialer.DialContext},
+		Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: dial},
 	}
 }
 
-func fetchList(client *http.Client, url string, block func(string)) {
+// lookup resolves host via each upstream in turn, giving each 3 seconds, and returns the first answer.
+func lookup(ctx context.Context, upstreams []string, host string) ([]net.IPAddr, error) {
+	var errs []error
+	for _, up := range upstreams {
+		r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, up)
+		}}
+		lctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		ips, err := r.LookupIPAddr(lctx, host)
+		cancel()
+		if err == nil && len(ips) > 0 {
+			return ips, nil
+		}
+		errs = append(errs, fmt.Errorf("lookup %s via %s: %w", host, up, err))
+	}
+	return nil, errors.Join(errs...)
+}
+
+// fetchList streams one list into block. A request error, non-200 status, read error,
+// or a list with no domains (e.g. an HTML error page) is a failure.
+func fetchList(client *http.Client, url string, block func(string)) error {
 	start := time.Now()
 	resp, err := client.Get(url)
 	if err != nil {
-		log.Printf("blacklist %s: %v", url, err)
-		return
+		return fmt.Errorf("blacklist %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("blacklist %s: %s", url, resp.Status)
-		return
+		return fmt.Errorf("blacklist %s: %s", url, resp.Status)
 	}
 	n, err := parseHosts(resp.Body, block)
 	if err != nil {
-		log.Printf("blacklist %s: partial: %d domains before error: %v", url, n, err)
-		return
+		return fmt.Errorf("blacklist %s: partial: %d domains before error: %w", url, n, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("blacklist %s: no domains", url)
 	}
 	log.Printf("blacklist %s: loaded %d domains in %s", url, n, time.Since(start).Round(time.Millisecond))
+	return nil
 }
 
 // hostsJunk are loopback/local names that hosts files map; blocking them breaks local tooling.

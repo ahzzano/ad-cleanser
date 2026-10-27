@@ -16,6 +16,13 @@ func normalize(name string) string {
 	return strings.TrimSuffix(strings.ToLower(name), ".")
 }
 
+// Len returns the number of blocked domains.
+func (b *Blacklist) Len() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.blocked)
+}
+
 // New builds a Blacklist; allowed names and their subdomains are exempt, and the
 // most specific allowed/blocked match wins. The allowed set is immutable afterwards.
 func New(blocked, allowed []string) *Blacklist {

@@ -66,8 +66,14 @@ func NewCleanser(opts *CleanserOpts, blacklist *blacklist.Blacklist) (*Cleanser,
 	return &Cleanser{addr: opts.Addr, upstreams: upstreams, workers: opts.Workers, blacklist: blacklist, logQueries: opts.LogQueries}, nil
 }
 
-// Upstream returns the primary upstream address (host:port).
-func (c *Cleanser) Upstream() string { return c.upstreams[0].String() }
+// Upstreams returns the configured upstream addresses (host:port), in order.
+func (c *Cleanser) Upstreams() []string {
+	out := make([]string, len(c.upstreams))
+	for i, u := range c.upstreams {
+		out[i] = u.String()
+	}
+	return out
+}
 
 // shortcut: hardcoded attempt count, make it configurable if anyone asks.
 const upstreamAttempts = 2
