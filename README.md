@@ -24,6 +24,10 @@ question name is not forwarded; it gets a locally built NXDOMAIN (header plus
 question section only, no EDNS OPT record) plus an SOA in the authority section so
 clients cache the block for 300 seconds.
 
+Type `r` on stdin to reload the config and blocklists. The new policy is swapped in
+atomically only if every list loads (HTTP 200, fully read, at least one domain); otherwise
+the current policy is kept and the error is logged.
+
 Configure `internal.CleanserOpts.DNSAddresses` using UDP `host:port` addresses
 (bracket IPv6 hosts). The list must be nonempty. Each query gets two attempts
 (2s timeout each), starting at the upstream that last answered and failing over to

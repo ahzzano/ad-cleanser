@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -113,6 +114,52 @@ func TestFetchListsValidation(t *testing.T) {
 			t.Errorf("%s: err = %v, want error naming the URL", path, err)
 		}
 	}
+}
+
+// TestFailedReloadKeepsPolicy mirrors cmd's reload: a failed fetch must not reach Replace.
+func TestFailedReloadKeepsPolicy(t *testing.T) {
+	srv := listServer(t)
+	live := New([]string{"ads.example"}, nil)
+	next := New(nil, nil)
+	if err := <-next.FetchLists([]string{srv.URL + "/ok", srv.URL + "/missing"}, upstream); err == nil {
+		live.Replace(next)
+		t.Fatal("expected fetch error")
+	}
+	if !live.IsBlocked("ads.example") || live.IsBlocked("new.example") {
+		t.Error("failed reload changed the live policy")
+	}
+}
+
+func TestConcurrentReplace(t *testing.T) {
+	// every snapshot blocks shared.example and never other.example, mid-swap included
+	old, nu := []string{"old.example", "shared.example"}, []string{"new.example", "shared.example"}
+	live := New(old, nil)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if !live.IsBlocked("shared.example") || live.IsBlocked("other.example") {
+					t.Error("inconsistent policy during Replace")
+					return
+				}
+			}
+		})
+	}
+	for i := range 100 {
+		if i%2 == 0 {
+			live.Replace(New(nu, nil))
+		} else {
+			live.Replace(New(old, nil))
+		}
+	}
+	close(stop)
+	wg.Wait()
 }
 
 func TestIsBlocked(t *testing.T) {

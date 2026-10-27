@@ -16,6 +16,17 @@ func normalize(name string) string {
 	return strings.TrimSuffix(strings.ToLower(name), ".")
 }
 
+// Replace atomically swaps in other's blocked and allowed sets; other must not be used afterwards.
+// Callers validate other first (FetchLists returned nil): a failed reload keeps b as is.
+func (b *Blacklist) Replace(other *Blacklist) {
+	other.mu.RLock()
+	blocked, allowed := other.blocked, other.allowed
+	other.mu.RUnlock()
+	b.mu.Lock()
+	b.blocked, b.allowed = blocked, allowed
+	b.mu.Unlock()
+}
+
 // Len returns the number of blocked domains.
 func (b *Blacklist) Len() int {
 	b.mu.RLock()
@@ -24,7 +35,7 @@ func (b *Blacklist) Len() int {
 }
 
 // New builds a Blacklist; allowed names and their subdomains are exempt, and the
-// most specific allowed/blocked match wins. The allowed set is immutable afterwards.
+// most specific allowed/blocked match wins. The allowed set changes only through Replace.
 func New(blocked, allowed []string) *Blacklist {
 	b := &Blacklist{blocked: make(map[string]struct{}, len(blocked)), allowed: make(map[string]struct{}, len(allowed))}
 	for _, d := range blocked {
