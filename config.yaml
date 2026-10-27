@@ -1,12 +1,11 @@
 addr: 127.0.0.1:53
-# dns_addresses: ["127.0.0.1:25565"]
-# tried in order with failover; the upstream that last answered is tried first
 dns_addresses:
     - 1.1.1.1:53
     - 8.8.8.8:53
 workers: 32
 log_queries: false
 blacklists:
+    - https://adblock.turtlecute.org/d3host.txt
     - https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Spam/hosts
     - https://raw.githubusercontent.com/PolishFiltersTeam/KADhosts/master/KADhosts.txt
     - https://v.firebog.net/hosts/static/w3kbl.txt
